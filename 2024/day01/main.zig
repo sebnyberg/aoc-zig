@@ -11,6 +11,8 @@ pub fn main() void {
     while (file.reader().readUntilDelimiterOrEof(&arr, '\n')) |result| {
         if (result != null) {
             std.debug.print("{s}\n", .{result.?});
+        } else {
+            return;
         }
     } else |err| {
         std.debug.print("{any}", .{err});
