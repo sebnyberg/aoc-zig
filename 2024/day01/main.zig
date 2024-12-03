@@ -7,7 +7,11 @@ const LineIterator = struct {
     fbs: std.io.FixedBufferStream([]u8),
     fn next(self: *LineIterator) ![]u8 {
         try self.fbs.seekTo(0);
-        try self.file.reader().streamUntilDelimiter(self.fbs.writer(), '\n', self.fbs.buffer.len);
+        try self.file.reader().streamUntilDelimiter(
+            self.fbs.writer(),
+            '\n',
+            self.fbs.buffer.len,
+        );
         return self.fbs.getWritten();
     }
 };
@@ -21,7 +25,10 @@ fn lineIterator(f: std.fs.File) LineIterator {
 }
 
 pub fn main() void {
-    const file = std.fs.cwd().openFile("./2024/day01/testinput", .{ .mode = .read_only }) catch |err| {
+    const file = std.fs.cwd().openFile(
+        "./2024/day01/input",
+        .{ .mode = .read_only },
+    ) catch |err| {
         std.debug.print("{any}", .{err});
         return;
     };
