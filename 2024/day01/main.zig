@@ -33,7 +33,6 @@ pub fn main() void {
         return;
     };
     var iter = lineIterator(file);
-    // var it = std.mem.split(u8, "abc123", ", ");
     while (iter.next()) |line| {
         std.debug.print("{s}\n", .{line});
     } else |err| {
