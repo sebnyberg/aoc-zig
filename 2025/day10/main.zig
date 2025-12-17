@@ -1,4 +1,5 @@
 const std = @import("std");
+const RuntimeStarsAndBars = @import("stars_and_bars.zig").RuntimeStarsAndBars;
 
 const print = std.debug.print;
 const parseInt = std.fmt.parseInt;
@@ -163,6 +164,7 @@ fn solve1(m: Machine) !u32 {
 
 pub fn solve2(m: Machine) !struct {
     score: f64,
+    maxPushGroupSize: u32,
     res: u32,
 } {
     // This part has two phases:
@@ -175,6 +177,10 @@ pub fn solve2(m: Machine) !struct {
 
     // var powerPushIndices = gpa.alloc(ArrayList)
     const plan = try solve2_findSearchPlan(gpa, m);
+    var maxPushGroupSize: u32 = 0;
+    for (plan.plan) |item| {
+        maxPushGroupSize = @max(maxPushGroupSize, item.npushes);
+    }
 
     print("Running search for score {d}\n", .{plan.score});
     const result = try solve2_minimizeSteps(gpa, m, plan.plan);
@@ -182,6 +188,7 @@ pub fn solve2(m: Machine) !struct {
 
     return .{
         .score = plan.score,
+        .maxPushGroupSize = maxPushGroupSize,
         .res = result,
     };
 }
@@ -223,7 +230,7 @@ fn solve2_minimizeSteps_dfs(
     pushPowerDelta: *[16][16]u1,
 ) !u32 {
     if (planIdx == plan.len) {
-        print("Found a result!\n", .{});
+        // print("Found a result!\n", .{});
         return 0;
     }
     // print("npushes: {d}\n", .{plan[planIdx].npushes});
@@ -236,15 +243,16 @@ fn solve2_minimizeSteps_dfs(
     var res: u32 = std.math.maxInt(u30);
     const step = plan[planIdx];
 
-    // Check if we don't need to perform any actions
+    // Check if prior pushes caused and issue for this index.
+    if (currPower[step.powerIdx] > wantPower[step.powerIdx]) {
+        return std.math.maxInt(u30);
+    }
+
+    // Check if this position is already aiight
     if (currPower[step.powerIdx] == wantPower[step.powerIdx]) {
         // print("Done with powerIdx {d}\n", .{step.powerIdx});
         // continue to next step of the plan.
         return try solve2_minimizeSteps_dfs(mem, planIdx + 1, npower, currPower, wantPower, plan, pushPowerDelta);
-    }
-
-    if (currPower[step.powerIdx] > wantPower[step.powerIdx]) {
-        return std.math.maxInt(u30);
     }
 
     // At this stage, we need to push some buttons.
@@ -253,13 +261,31 @@ fn solve2_minimizeSteps_dfs(
         return std.math.maxInt(u30);
     }
 
-    // Or we can, in which case, let's push any button!
-    for (step.pushIndices[0..step.npushes]) |pushIdx| {
-        const nextPower = addArrays(u16, u1, 16, currPower, pushPowerDelta[pushIdx]);
+    // Or we can, in which case, let's iterate over combinations of pushes that sum to the total
+    // needed for this position
+    const missingPower = wantPower[step.powerIdx] - currPower[step.powerIdx];
+    var combIterator = try RuntimeStarsAndBars(u16).init(gpa, missingPower, step.npushes);
+    while (combIterator.next()) |comb| {
+        // print("Missing {d} power for index {d}\n", .{ missingPower, step.powerIdx });
+        // print("Can achieve this by adding push groups {any}\n", .{step.pushIndices[0..step.npushes]});
+        // print("Want:\t{any}\n", .{wantPower});
+        // print("Got:\t{any}\n", .{currPower});
 
-        // Delta was OK, let's push the button and continue
+        var nextPower: [16]u16 = undefined;
+        @memcpy(&nextPower, &currPower);
+        for (comb, 0..) |groupCount, i| {
+            // push groupCount items from the i'th push in the plan
+            const pushIndex = step.pushIndices[i];
+            const pushDelta = pushPowerDelta[pushIndex];
+            // print("Add:\t{any} x {d} (Group {d})\n", .{ pushDelta[0..npower], groupCount, pushIndex });
+            for (pushDelta, 0..) |val, j| {
+                nextPower[j] += val * groupCount;
+            }
+        }
+        // print("Result:\t{any})\n", .{nextPower});
+
         var subRes = try solve2_minimizeSteps_dfs(mem, planIdx, npower, nextPower, wantPower, plan, pushPowerDelta);
-        subRes += 1;
+        subRes += missingPower;
         res = @min(
             res,
             subRes,
@@ -439,6 +465,7 @@ pub fn main() !void {
     var res1: u64 = 0;
     // var res2: u64 = 0;
     var maxScore: f64 = 0;
+    var maxPushGroupSize: u32 = 0;
     var res2: u64 = 0;
 
     var n: usize = 0;
@@ -455,10 +482,12 @@ pub fn main() !void {
         res1 += try solve1(m);
         const resStruct = try solve2(m);
         res2 += resStruct.res;
+        maxPushGroupSize = @max(maxPushGroupSize, resStruct.maxPushGroupSize);
         maxScore = @max(maxScore, resStruct.score);
         i += 1;
     }
     print("MaxScore:\n{d}\n", .{maxScore});
+    print("MaxPushGroupSize:\n{d}\n", .{maxPushGroupSize});
     print("Result1:\n{d}\n", .{res1});
     print("Result2:\n{d}\n", .{res2});
 }
