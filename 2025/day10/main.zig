@@ -163,7 +163,7 @@ fn solve1(m: Machine) !u32 {
 
 pub fn solve2(m: Machine) !struct {
     score: f64,
-    res: u64,
+    res: u32,
 } {
     // This part has two phases:
     //
@@ -186,8 +186,8 @@ pub fn solve2(m: Machine) !struct {
     };
 }
 
-fn solve2_minimizeSteps(allocator: std.mem.Allocator, m: Machine, searchPlan: []SearchStep) !u64 {
-    var mem = std.AutoHashMap([16]u16, u64).init(allocator);
+fn solve2_minimizeSteps(allocator: std.mem.Allocator, m: Machine, searchPlan: []SearchStep) !u32 {
+    var mem = std.AutoHashMap([16]u16, u32).init(allocator);
     defer mem.deinit();
     var wantPower: [16]u16 = .{0} ** 16;
     for (0..m.power.len) |i| {
@@ -202,7 +202,7 @@ fn solve2_minimizeSteps(allocator: std.mem.Allocator, m: Machine, searchPlan: []
         }
     }
 
-    return solve2_minimizeSteps_dfs(&mem, 0, m.w, currPower, wantPower, searchPlan, pushPowerDelta);
+    return solve2_minimizeSteps_dfs(&mem, 0, m.w, currPower, &wantPower, searchPlan, &pushPowerDelta);
 }
 
 fn addArrays(comptime T1: type, comptime T2: type, comptime n: usize, a: [n]T1, b: [n]T2) [n]T1 {
@@ -214,16 +214,16 @@ fn addArrays(comptime T1: type, comptime T2: type, comptime n: usize, a: [n]T1, 
 }
 
 fn solve2_minimizeSteps_dfs(
-    mem: *std.AutoHashMap([16]u16, u64),
+    mem: *std.AutoHashMap([16]u16, u32),
     planIdx: usize,
     npower: usize,
     currPower: [16]u16,
-    wantPower: [16]u16,
+    wantPower: *[16]u16,
     plan: []SearchStep,
-    pushPowerDelta: [16][16]u1,
-) !u64 {
+    pushPowerDelta: *[16][16]u1,
+) !u32 {
     if (planIdx == plan.len) {
-        print("found a result!\n", .{});
+        print("Found a result!\n", .{});
         return 0;
     }
     // print("npushes: {d}\n", .{plan[planIdx].npushes});
@@ -233,9 +233,8 @@ fn solve2_minimizeSteps_dfs(
         return res;
     }
 
-    var res: u64 = std.math.maxInt(u62);
+    var res: u32 = std.math.maxInt(u30);
     const step = plan[planIdx];
-    const powerIdx = step.powerIdx;
 
     // Check if we don't need to perform any actions
     if (currPower[step.powerIdx] == wantPower[step.powerIdx]) {
@@ -244,33 +243,22 @@ fn solve2_minimizeSteps_dfs(
         return try solve2_minimizeSteps_dfs(mem, planIdx + 1, npower, currPower, wantPower, plan, pushPowerDelta);
     }
 
+    if (currPower[step.powerIdx] > wantPower[step.powerIdx]) {
+        return std.math.maxInt(u30);
+    }
+
     // At this stage, we need to push some buttons.
     // But maybe we can't?
     if (step.npushes == 0) {
-        return std.math.maxInt(u62);
+        return std.math.maxInt(u30);
     }
 
     // Or we can, in which case, let's push any button!
-    outer: for (step.pushIndices[0..step.npushes]) |pushIdx| {
-        // Apply each delta
+    for (step.pushIndices[0..step.npushes]) |pushIdx| {
         const nextPower = addArrays(u16, u1, 16, currPower, pushPowerDelta[pushIdx]);
-        // print("nextPower: {any}\n", .{nextPower});
-
-        // Verify that the push did not cause issues.
-        for (0..npower) |i| {
-            if (nextPower[i] > wantPower[i]) {
-                continue :outer; // skip this push, it does not work.
-            }
-        }
-
-        // Check if we are done with this step in the plan
-        var nextPlanIdx = planIdx;
-        if (nextPower[powerIdx] == wantPower[powerIdx]) {
-            nextPlanIdx += 1;
-        }
 
         // Delta was OK, let's push the button and continue
-        var subRes = try solve2_minimizeSteps_dfs(mem, nextPlanIdx, npower, nextPower, wantPower, plan, pushPowerDelta);
+        var subRes = try solve2_minimizeSteps_dfs(mem, planIdx, npower, nextPower, wantPower, plan, pushPowerDelta);
         subRes += 1;
         res = @min(
             res,
@@ -465,11 +453,9 @@ pub fn main() !void {
         const m = try Machine.parse(gpa, line);
         // try m.printContents();
         res1 += try solve1(m);
-        if (i == 61) {
-            const resStruct = try solve2(m);
-            res2 += resStruct.res;
-            maxScore = @max(maxScore, resStruct.score);
-        }
+        const resStruct = try solve2(m);
+        res2 += resStruct.res;
+        maxScore = @max(maxScore, resStruct.score);
         i += 1;
     }
     print("MaxScore:\n{d}\n", .{maxScore});
