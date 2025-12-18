@@ -243,7 +243,7 @@ test "SolveInput" {
     var rows = std.mem.tokenizeScalar(u8, contents, '\n');
     var k: u64 = 0;
 
-    const filter = [_]usize{21};
+    const filter = [_]usize{};
     while (rows.next()) |row| : (k += 1) {
         if (filter.len > 0) {
             var ok = false;

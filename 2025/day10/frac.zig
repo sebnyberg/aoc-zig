@@ -224,7 +224,7 @@ pub fn Frac(comptime T: type) type {
             // If the other argument is a fraction...
             if (Other == Self) {
                 const res = Self{
-                    .a = self.a + other.a,
+                    .a = self.a * other.b + other.a * self.b,
                     .b = self.b * other.b,
                 };
                 return res.normalize();
@@ -250,7 +250,7 @@ pub fn Frac(comptime T: type) type {
             // If the other argument is a fraction...
             if (Other == Self) {
                 const res = Self{
-                    .a = self.a - other.a,
+                    .a = self.a * other.b - other.a * self.b,
                     .b = self.b * other.b,
                 };
                 return res.normalize();
