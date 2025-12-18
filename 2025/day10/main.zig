@@ -164,7 +164,7 @@ const Solve2Result = struct {
     score: f64,
 };
 
-fn solve2(m: Machine) !Solve2Result {
+fn solve2(m: Machine, machineIdx: usize) Solve2Result {
     // Build equation system from machine:
     // - neqs = number of rows (m.w)
     // - nvars = number of buttons (m.pushEffects.len)
@@ -173,7 +173,10 @@ fn solve2(m: Machine) !Solve2Result {
     const neqs = m.w;
     const nvars = m.pushEffects.len;
 
-    var eq = try solver.EquationSystem(i64).init(gpa, neqs, nvars);
+    var eq = solver.EquationSystem(i64).init(gpa, neqs, nvars) catch {
+        log.err("Failed to initialize equation system", .{});
+        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
+    };
     defer eq.deinit();
 
     // Fill in the coefficients
@@ -189,10 +192,26 @@ fn solve2(m: Machine) !Solve2Result {
     }
 
     // Solve using LinEqSolver
-    var les = try solver.LinEqSolver(i64).init(gpa, &eq);
+    var les = solver.LinEqSolver(i64).init(gpa, &eq) catch {
+        log.err("Failed to initialize LinEqSolver", .{});
+        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
+    };
     defer les.deinit();
 
-    if (try les.solveMinSum(500)) |solution| {
+    const maybeSolution = les.solveMinSum(500) catch |err| {
+        if (err == error.IntegerDivisionFailed) {
+            log.err("IntegerDivisionFailed for machine {d}:", .{machineIdx});
+            log.err("  neqs={d}, nvars={d}", .{ neqs, nvars });
+            log.err("  Current equation state:", .{});
+            eq.print();
+            log.err("  col_order: {any}", .{les.col_order});
+        } else {
+            log.err("Solver error: {any}", .{err});
+        }
+        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
+    };
+
+    if (maybeSolution) |solution| {
         defer gpa.free(solution);
         var sum: u64 = 0;
         var maxVal: u64 = 0;
@@ -255,7 +274,7 @@ pub fn main() !void {
         const m = try Machine.parse(gpa, line);
         // try m.printContents();
         res1 += try solve1(m);
-        const resStruct = try solve2(m);
+        const resStruct = solve2(m);
         res2 += resStruct.res;
         maxPushGroupSize = @max(maxPushGroupSize, resStruct.maxPushGroupSize);
         maxScore = @max(maxScore, resStruct.score);
