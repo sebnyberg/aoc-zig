@@ -35,14 +35,35 @@ test "frac.normalize" {
     const F = mustInitFrac(i16).init;
 
     try std.testing.expectEqual(F(-1, 10), F(1, -10));
-
     try std.testing.expectEqual(F(-10, 1), F(1, -10).inv());
+}
+
+test "frac zero" {
+    const F = mustInitFrac(i16).init;
+
+    // Always init to 0/1
+    try std.testing.expectEqual(F(0, 1), F(0, 18));
+
+    // Refuse to inverse
+    try std.testing.expectError(error.DivisionByZero, F(0, 1).inv());
+
+    // Refuse to div with another 0/1
+    try std.testing.expectError(error.DivisionByZero, F(0, 1).div(F(0, 1)));
 }
 
 test "frac mul" {
     const F = mustInitFrac(i16).init;
 
     try std.testing.expectEqual(F(1, 1), F(-1, 10).mul(F(-10, 1)));
+
+    try std.testing.expectEqual(F(0, 1), F(1, 10).mul(F(0, 1)));
+}
+
+test "frac add" {
+    const F = mustInitFrac(i16).init;
+
+    try std.testing.expectEqual(F(1, 1), F(0, 10).add(1));
+    try std.testing.expectEqual(F(47 * 2 + 7, 47), F(7, 47).add(2));
 }
 
 const FracErrors = error{
@@ -96,7 +117,7 @@ fn Frac(comptime T: type) type {
         pub fn div(self: Self, other: anytype) !Self {
             const Other = @TypeOf(other);
             if (Other == Self) {
-                return self.mul(other.inv());
+                return self.mul(try other.inv());
             }
 
             const info = @typeInfo(Other);
@@ -108,11 +129,14 @@ fn Frac(comptime T: type) type {
                 return res.normalize();
             }
 
-            // Case 3: everything else
+            // Not supported
             return error.UnsupportedType;
         }
 
-        pub fn inv(self: Self) Self {
+        pub fn inv(self: Self) !Self {
+            if (self.a == 0) {
+                return error.DivisionByZero;
+            }
             const res = Self{
                 .a = self.b,
                 .b = self.a,
@@ -133,7 +157,7 @@ fn Frac(comptime T: type) type {
                 return res.normalize();
             }
 
-            // Or if the other argument is an integer
+            // Or if the other argument is a signed integer
             const info = @typeInfo(Other);
             if (info == .int or info == .comptime_int) {
                 if (other == 0) return error.DivisionByZero;
@@ -144,7 +168,59 @@ fn Frac(comptime T: type) type {
                 return res.normalize();
             }
 
-            // Case 3: everything else
+            // Not supported
+            return error.UnsupportedType;
+        }
+
+        pub fn add(self: Self, other: anytype) !Self {
+            const Other = @TypeOf(other);
+
+            // If the other argument is a fraction...
+            if (Other == Self) {
+                const res = Self{
+                    .a = self.a + other.a,
+                    .b = self.b * other.b,
+                };
+                return res.normalize();
+            }
+
+            // Or if the other argument is a signed integer
+            const info = @typeInfo(Other);
+            if (info == .int or info == .comptime_int) {
+                const res = Self{
+                    .a = self.a + other * self.b,
+                    .b = self.b,
+                };
+                return res.normalize();
+            }
+
+            // Not supported
+            return error.UnsupportedType;
+        }
+
+        pub fn sub(self: Self, other: anytype) !Self {
+            const Other = @TypeOf(other);
+
+            // If the other argument is a fraction...
+            if (Other == Self) {
+                const res = Self{
+                    .a = self.a - other.a,
+                    .b = self.b * other.b,
+                };
+                return res.normalize();
+            }
+
+            // Or if the other argument is a signed integer
+            const info = @typeInfo(Other);
+            if (info == .int or info == .comptime_int) {
+                const res = Self{
+                    .a = self.a - other * self.b,
+                    .b = self.b,
+                };
+                return res.normalize();
+            }
+
+            // Not supported
             return error.UnsupportedType;
         }
 
@@ -153,6 +229,10 @@ fn Frac(comptime T: type) type {
                 return error.HasFraction;
             }
             return @as(T2, @intCast(self.a));
+        }
+
+        pub fn iszero(self: Self) bool {
+            return self.a == 0;
         }
     };
 }
