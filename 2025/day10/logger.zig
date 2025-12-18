@@ -1,6 +1,6 @@
 const std = @import("std");
 
-fn myLogFn(
+pub fn logFn(
     comptime level: std.log.Level,
     comptime scope: @TypeOf(.enum_literal),
     comptime format: []const u8,

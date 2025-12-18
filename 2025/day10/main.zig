@@ -1,5 +1,6 @@
 const std = @import("std");
 const dateLogFn = @import("logger.zig").logFn;
+const solver = @import("solver.zig");
 
 pub const std_options: std.Options = .{
     .logFn = dateLogFn,
@@ -155,6 +156,59 @@ fn solve1(m: Machine) !u32 {
         next = tmp;
     }
     unreachable;
+}
+
+const Solve2Result = struct {
+    res: u64,
+    maxPushGroupSize: u32,
+    score: f64,
+};
+
+fn solve2(m: Machine) !Solve2Result {
+    // Build equation system from machine:
+    // - neqs = number of rows (m.w)
+    // - nvars = number of buttons (m.pushEffects.len)
+    // - lhs[row][button] = 1 if button affects row
+    // - rhs[row] = power[row]
+    const neqs = m.w;
+    const nvars = m.pushEffects.len;
+
+    var eq = try solver.EquationSystem(i64).init(gpa, neqs, nvars);
+    defer eq.deinit();
+
+    // Fill in the coefficients
+    for (m.pushEffects, 0..) |effects, button| {
+        for (effects) |row| {
+            eq.lhs[row][button] = 1;
+        }
+    }
+
+    // Fill in the RHS
+    for (0..neqs) |row| {
+        eq.rhs[row] = m.power[row];
+    }
+
+    // Solve using LinEqSolver
+    var les = try solver.LinEqSolver(i64).init(gpa, &eq);
+    defer les.deinit();
+
+    if (try les.solveMinSum(500)) |solution| {
+        defer gpa.free(solution);
+        var sum: u64 = 0;
+        var maxVal: u64 = 0;
+        for (solution) |v| {
+            sum += @intCast(v);
+            maxVal = @max(maxVal, @as(u64, @intCast(v)));
+        }
+        return Solve2Result{
+            .res = sum,
+            .maxPushGroupSize = @intCast(maxVal),
+            .score = @floatFromInt(sum),
+        };
+    } else {
+        log.err("No solution found for machine", .{});
+        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
+    }
 }
 
 pub fn bmstr(comptime T: type, bm: T, w: T) [@bitSizeOf(T)]u8 {
