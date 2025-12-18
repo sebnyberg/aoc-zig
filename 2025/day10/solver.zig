@@ -1,28 +1,34 @@
 const std = @import("std");
 
+const Frac = @import("frac.zig").Frac;
+
 test "parseExample" {
-    var eq = try parseExample(u8, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
+    var eq = try parseExample(i8, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
     defer eq.deinit();
 
-    const expected_lhs = [4][6]u8{
+    const expected_lhs = [4][6]i8{
         .{ 0, 0, 0, 0, 1, 1 },
         .{ 0, 1, 0, 0, 0, 1 },
         .{ 0, 0, 1, 1, 1, 0 },
         .{ 1, 1, 0, 1, 0, 0 },
     };
-    const expected_rhs = [4]u8{ 3, 5, 4, 7 };
+    const expected_rhs = [4]i8{ 3, 5, 4, 7 };
 
     try std.testing.expectEqual(@as(usize, 4), eq.lhs.len);
     try std.testing.expectEqual(@as(usize, 6), eq.lhs[0].len);
 
     for (expected_lhs, 0..) |row, i| {
-        try std.testing.expectEqualSlices(u8, &row, eq.lhs[i]);
+        for (row, 0..) |cell, j| {
+            try std.testing.expectEqual(try Frac(i8).init(cell, 1), eq.lhs[i][j]);
+        }
     }
-    try std.testing.expectEqualSlices(u8, &expected_rhs, eq.rhs);
+    for (expected_rhs, 0..) |cell, i| {
+        try std.testing.expectEqual(try Frac(i8).init(cell, 1), eq.rhs[i]);
+    }
 }
 
 test "EquationSystem.swapRows" {
-    var eq = try parseExample(u16, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
+    var eq = try parseExample(i16, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
     defer eq.deinit();
 
     // Try an invalid swap first
@@ -31,22 +37,26 @@ test "EquationSystem.swapRows" {
     // Swap rows 0 and 2, then verify
     try eq.swapRows(0, 2);
 
-    const expected_lhs = [4][6]u16{
+    const expected_lhs = [4][6]i16{
         .{ 0, 0, 1, 1, 1, 0 }, // was row 2
         .{ 0, 1, 0, 0, 0, 1 },
         .{ 0, 0, 0, 0, 1, 1 }, // was row 0
         .{ 1, 1, 0, 1, 0, 0 },
     };
-    const expected_rhs = [4]u16{ 4, 5, 3, 7 };
+    const expected_rhs = [4]i16{ 4, 5, 3, 7 };
 
     for (expected_lhs, 0..) |row, i| {
-        try std.testing.expectEqualSlices(u16, &row, eq.lhs[i]);
+        for (row, 0..) |cell, j| {
+            try std.testing.expectEqual(try Frac(i16).init(cell, 1), eq.lhs[i][j]);
+        }
     }
-    try std.testing.expectEqualSlices(u16, &expected_rhs, eq.rhs);
+    for (expected_rhs, 0..) |cell, i| {
+        try std.testing.expectEqual(try Frac(i16).init(cell, 1), eq.rhs[i]);
+    }
 }
 
 test "EquationSystem.swapCols" {
-    var eq = try parseExample(u16, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
+    var eq = try parseExample(i16, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
     defer eq.deinit();
 
     // Try an invalid swap first
@@ -55,19 +65,23 @@ test "EquationSystem.swapCols" {
     // Swap cols 0 and 4, then verify
     try eq.swapCols(0, 4);
 
-    const expected_lhs = [4][6]u16{
+    const expected_lhs = [4][6]i16{
         .{ 1, 0, 0, 0, 0, 1 }, // col 0 and 4 swapped
         .{ 0, 1, 0, 0, 0, 1 },
         .{ 1, 0, 1, 1, 0, 0 },
         .{ 0, 1, 0, 1, 1, 0 },
     };
     // RHS unchanged by column swap
-    const expected_rhs = [4]u16{ 3, 5, 4, 7 };
+    const expected_rhs = [4]i16{ 3, 5, 4, 7 };
 
     for (expected_lhs, 0..) |row, i| {
-        try std.testing.expectEqualSlices(u16, &row, eq.lhs[i]);
+        for (row, 0..) |cell, j| {
+            try std.testing.expectEqual(try Frac(i16).init(cell, 1), eq.lhs[i][j]);
+        }
     }
-    try std.testing.expectEqualSlices(u16, &expected_rhs, eq.rhs);
+    for (expected_rhs, 0..) |cell, i| {
+        try std.testing.expectEqual(try Frac(i16).init(cell, 1), eq.rhs[i]);
+    }
 }
 
 const EquationSystemError = error{
@@ -76,28 +90,48 @@ const EquationSystemError = error{
 
 fn EquationSystem(comptime T: type) type {
     return struct {
-        lhs: [][]T,
-        rhs: []T,
+        lhs: [][]Frac(T),
+        rhs: []Frac(T),
         alloc: std.mem.Allocator,
+        allocated_rows: usize,
         const Self = @This();
 
         pub fn init(alloc: std.mem.Allocator, num_eqs: usize, num_vars: usize) !Self {
-            const lhs = try alloc.alloc([]T, num_eqs);
+            const zeroFrac = try Frac(T).init(0, 1);
+
+            const lhs = try alloc.alloc([]Frac(T), num_eqs);
             for (lhs, 0..) |_, i| {
-                lhs[i] = try alloc.alloc(T, num_vars);
-                @memset(lhs[i], 0);
+                lhs[i] = try alloc.alloc(Frac(T), num_vars);
+                for (0..lhs[i].len) |j| {
+                    lhs[i][j] = zeroFrac;
+                }
             }
-            const rhs = try alloc.alloc(T, num_eqs);
-            @memset(rhs, 0);
+            const rhs = try alloc.alloc(Frac(T), num_eqs);
+            for (0..rhs.len) |i| {
+                rhs[i] = zeroFrac;
+            }
             return Self{
                 .lhs = lhs,
                 .rhs = rhs,
                 .alloc = alloc,
+                .allocated_rows = num_eqs,
             };
         }
 
         pub fn nrows(self: *const Self) usize {
             return self.lhs.len;
+        }
+
+        pub fn removeRow(self: *Self, idx: usize) !void {
+            if (idx >= self.lhs.len) {
+                return error.OutOfBounds;
+            }
+            for (idx..self.lhs.len - 1) |i| {
+                self.lhs[i] = self.lhs[i + 1];
+                self.rhs[i] = self.rhs[i + 1];
+            }
+            self.lhs = self.lhs[0 .. self.lhs.len - 1];
+            self.rhs = self.rhs[0 .. self.rhs.len - 1];
         }
 
         pub fn ncols(self: *const Self) usize {
@@ -131,20 +165,29 @@ fn EquationSystem(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            for (self.lhs) |row| {
+            // Use original allocation pointers and sizes
+            const orig_lhs = self.lhs.ptr[0..self.allocated_rows];
+            const orig_rhs = self.rhs.ptr[0..self.allocated_rows];
+
+            for (orig_lhs) |row| {
                 self.alloc.free(row);
             }
-            self.alloc.free(self.lhs);
-            self.alloc.free(self.rhs);
+            self.alloc.free(orig_lhs);
+            self.alloc.free(orig_rhs);
         }
 
         pub fn print(self: *Self) void {
+            var buf: [32]u8 = undefined;
             std.debug.print("\n", .{});
             for (0..self.nrows()) |i| {
                 for (0..self.ncols()) |j| {
-                    std.debug.print("{d:3} ", .{self.lhs[i][j]});
+                    const str = self.lhs[i][j].format(&buf) catch unreachable;
+                    std.debug.print("{s:>6} ", .{str});
                 }
-                std.debug.print("= {d:3}\n", .{self.rhs[i]});
+                std.debug.print("| ", .{});
+                const rhs_str = self.rhs[i].format(&buf) catch unreachable;
+                std.debug.print("{s:>6}", .{rhs_str});
+                std.debug.print("\n", .{});
             }
         }
     };
@@ -176,7 +219,7 @@ fn parseExample(comptime T: type, alloc: std.mem.Allocator, s: []const u8) !Equa
         var numsIter = std.mem.tokenizeScalar(u8, idxsStr, ',');
         while (numsIter.next()) |idxStr| {
             const eqIdx = try std.fmt.parseInt(usize, idxStr, 10);
-            eq.lhs[eqIdx][varIdx] = 1;
+            eq.lhs[eqIdx][varIdx] = try Frac(T).init(1, 1);
         }
     }
 
@@ -186,27 +229,58 @@ fn parseExample(comptime T: type, alloc: std.mem.Allocator, s: []const u8) !Equa
         var i: usize = 0;
         while (iter.next()) |yStr| : (i += 1) {
             const yVal = try std.fmt.parseInt(T, yStr, 10);
-            eq.rhs[i] = yVal;
+            eq.rhs[i] = try Frac(T).init(yVal, 1);
         }
     }
 
     return eq;
 }
 
+const row13 = "[##.##.....] (1,2,3,4,9) (0,7) (0,3,8,9) (0,2) (0,1,8) (1,2,9) (0,2,3,5,6,7,8) (0,1,3,4,6,7) (7) (0,2,3,4,5,6,7,8) (0,1,3,7,8,9) (0,1,2,3,4,5,8,9) (0,1,3,4,6,7,9) {79,44,43,71,37,21,28,61,55,60}";
+
+test "SolveInput" {
+    const contents = try std.fs.cwd().readFileAlloc(std.testing.allocator, "./input", 1024 * 1024);
+    defer std.testing.allocator.free(contents);
+
+    var rows = std.mem.tokenizeScalar(u8, contents, '\n');
+    var k: u64 = 0;
+
+    const filter = [_]usize{};
+    while (rows.next()) |row| : (k += 1) {
+        if (filter.len > 0) {
+            var ok = false;
+            for (filter) |kk| {
+                if (kk == k) {
+                    ok = true;
+                }
+            }
+            if (!ok) {
+                continue;
+            }
+        }
+
+        var eq = try parseExample(i16, std.testing.allocator, row);
+        defer eq.deinit();
+        std.debug.print("Eq {d}\n", .{k});
+        var les = LinEqSolver(i16).init(&eq);
+        try les.rref();
+    }
+}
+
 test "LinEqSolver" {
-    var eq = try parseExample(u16, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
+    var eq = try parseExample(i16, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
     defer eq.deinit();
 
-    const les = LinEqSolver(u16).init(&eq);
+    const les = LinEqSolver(i16).init(&eq);
     _ = les; // Solver methods to be implemented
 }
 
 test "LinEqSolver.rref" {
-    var eq = try parseExample(i16, std.testing.allocator, "[...] (1,2) (0,1) (0,2) {5,3,4}");
-    defer eq.deinit();
-
-    var solver = LinEqSolver(i16).init(&eq);
-    try solver.rref();
+    // var eq = try parseExample(i16, std.testing.allocator, row13);
+    // defer eq.deinit();
+    //
+    // var solver = LinEqSolver(i16).init(&eq);
+    // try solver.rref();
 
     // // After full RREF with XOR elimination, we should have identity matrix
     // const expected_lhs = [3][3]i16{
@@ -223,8 +297,9 @@ test "LinEqSolver.rref" {
 }
 
 const LinEqSolverErrors = error{
-    EmptyColumn,
     IntegerDivisionFailed,
+    NoPivot,
+    NoSolution,
 };
 
 fn LinEqSolver(comptime T: type) type {
@@ -244,52 +319,73 @@ fn LinEqSolver(comptime T: type) type {
         }
 
         fn rref(self: *Self) !void {
+            var k: u64 = 0;
             const npivot = @min(self.eq.ncols(), self.eq.nrows());
-            self.eq.print();
+
             for (0..npivot) |pivot| {
-                // Find first non-zero entry in this column
-                var sourceRowIdx: ?usize = null;
-                for (pivot..npivot) |rowIdx| {
-                    const cell = self.eq.lhs[rowIdx][pivot];
-                    if (cell != 0) {
-                        sourceRowIdx = rowIdx;
-                        break;
+                std.debug.print("Iteration {d}\n", .{k});
+                k += 1;
+                self.eq.print();
+
+                // Find first non-zero entry to swap into this position
+                var found = false;
+                outer: for (pivot..self.eq.ncols()) |j| {
+                    for (pivot..npivot) |i| {
+                        if (!self.eq.lhs[i][j].iszero()) {
+                            try self.eq.swapCols(pivot, j);
+                            try self.eq.swapRows(pivot, i);
+                            found = true;
+                            break :outer;
+                        }
                     }
                 }
+                if (!found) {
+                    // TODO: if the value (RHS) is non-zero, then no solution exists,
+                    // but that should never happen, right?
+                    for (pivot..npivot) |i| {
+                        if (!self.eq.rhs[i].iszero()) {
+                            return error.NoSolution;
+                        }
+                    }
 
-                // Swap
-                if (sourceRowIdx) |idx| {
-                    // Move this row (this might be a noop)
-                    try self.eq.swapRows(pivot, idx);
-                } else {
-                    return error.EmptyColumn;
+                    // We can safely ignore the rest of the system.
+                    while (self.eq.nrows() > pivot) {
+                        try self.eq.removeRow(self.eq.nrows() - 1);
+                    }
+                    break;
                 }
 
                 // Normalize pivot row
-                const factor = self.eq.lhs[pivot][pivot];
-                for (0..self.eq.ncols()) |j| {
-                    const val = self.eq.lhs[pivot][j];
-                    if (val == 0) {
-                        continue;
+                {
+                    const factor = self.eq.lhs[pivot][pivot];
+                    for (0..self.eq.ncols()) |j| {
+                        const val = self.eq.lhs[pivot][j];
+                        if (val.equals(0)) {
+                            continue;
+                        }
+                        self.eq.lhs[pivot][j] = try val.div(factor);
                     }
-                    if (@rem(val, factor) != 0) {
-                        return error.IntegerDivisionFailed;
-                    }
-                    self.eq.lhs[pivot][j] = @divTrunc(val, factor);
                 }
 
                 // Eliminate entries in this column from other rows by
                 // removing this row from other rows as needed.
                 for (0..self.eq.nrows()) |rowIdx| {
-                    if (rowIdx == pivot or self.eq.lhs[rowIdx][pivot] == 0) {
+                    if (rowIdx == pivot or self.eq.lhs[rowIdx][pivot].equals(0)) {
                         continue;
                     }
 
+                    const remove_factor = self.eq.lhs[rowIdx][pivot];
+
                     // Eliminate this entry by subtracting the pivot row
                     for (pivot..self.eq.ncols()) |colIdx| {
-                        self.eq.lhs[rowIdx][colIdx] -= self.eq.lhs[pivot][colIdx];
+                        const current = self.eq.lhs[rowIdx][colIdx];
+
+                        const pivot_val = try self.eq.lhs[pivot][colIdx].mul(remove_factor);
+                        self.eq.lhs[rowIdx][colIdx] = try current.sub(pivot_val);
                     }
-                    self.eq.rhs[rowIdx] -= self.eq.rhs[pivot];
+                    const current_rhs = self.eq.rhs[rowIdx];
+                    const pivot_rhs = self.eq.rhs[pivot];
+                    self.eq.rhs[rowIdx] = try current_rhs.sub(pivot_rhs);
                 }
             }
         }
