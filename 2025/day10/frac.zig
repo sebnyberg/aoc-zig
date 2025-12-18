@@ -1,29 +1,54 @@
 const std = @import("std");
 
+fn mustInitFrac(comptime T: type) type {
+    return struct {
+        pub fn init(comptime a: T, comptime b: T) Frac(T) {
+            comptime {
+                if (b == 0) {
+                    @compileError("Initialized frac with zero denominator");
+                }
+            }
+            const res = Frac(T){
+                .a = a,
+                .b = b,
+            };
+            return res.normalize();
+        }
+    };
+}
+
 test "frac" {
-    const one_10th = try Frac(i16).init(1, 10);
-    const one_100th = try Frac(i16).init(1, 100);
-    const one_10th_neg = try Frac(i16).init(-1, 10);
+    const F = mustInitFrac(i16).init;
 
-    // (1/10)/10 = 1/100
-    try std.testing.expectEqual(one_100th, one_10th.div(10));
+    try std.testing.expectEqual(F(1, 100), F(1, 10).div(10));
 
-    // (1/10)*(1/10) = 1/100
-    try std.testing.expectEqual(one_100th, one_10th.mul(one_10th));
+    try std.testing.expectEqual(F(1, 100), F(1, 10).mul(F(1, 10)));
 
-    // (1/10)/(1/10) = 1
-    try std.testing.expectEqual(Frac(i16).init(1, 1), one_10th.div(one_10th));
+    try std.testing.expectEqual(F(1, 1), F(1, 10).div(F(1, 10)));
 
-    // (-1/10)/(-1/10) = 1
-    try std.testing.expectEqual(Frac(i16).init(1, 1), one_10th_neg.div(one_10th_neg));
+    try std.testing.expectEqual(F(1, 1), F(-1, 10).div(F(-1, 10)));
 
-    // (1/10)/(-1/10) = -1
-    try std.testing.expectEqual(Frac(i16).init(-1, 1), one_10th.div(one_10th_neg));
+    try std.testing.expectEqual(F(-1, 1), F(1, 10).div(F(-1, 10)));
+}
+
+test "frac.normalize" {
+    const F = mustInitFrac(i16).init;
+
+    try std.testing.expectEqual(F(-1, 10), F(1, -10));
+
+    try std.testing.expectEqual(F(-10, 1), F(1, -10).inv());
+}
+
+test "frac mul" {
+    const F = mustInitFrac(i16).init;
+
+    try std.testing.expectEqual(F(1, 1), F(-1, 10).mul(F(-10, 1)));
 }
 
 const FracErrors = error{
     UnsupportedType,
     DivisionByZero,
+    HasFraction,
 };
 
 // Frac contains the fraction a / b
@@ -45,10 +70,11 @@ fn Frac(comptime T: type) type {
             if (b == 0) {
                 return error.DivisionByZero;
             }
-            return .{
+            const res = Self{
                 .a = a,
                 .b = b,
             };
+            return res.normalize();
         }
 
         pub fn normalize(self: Self) Self {
@@ -87,10 +113,11 @@ fn Frac(comptime T: type) type {
         }
 
         pub fn inv(self: Self) Self {
-            return Self{
+            const res = Self{
                 .a = self.b,
                 .b = self.a,
             };
+            return res.normalize();
         }
 
         pub fn mul(self: Self, other: anytype) !Self {
@@ -119,6 +146,13 @@ fn Frac(comptime T: type) type {
 
             // Case 3: everything else
             return error.UnsupportedType;
+        }
+
+        pub fn asInt(self: Self, comptime T2: type) !T2 {
+            if (self.b != 1) {
+                return error.HasFraction;
+            }
+            return @as(T2, @intCast(self.a));
         }
     };
 }
