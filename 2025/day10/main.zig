@@ -1,7 +1,11 @@
 const std = @import("std");
-const RuntimeStarsAndBars = @import("stars_and_bars.zig").RuntimeStarsAndBars;
+const dateLogFn = @import("logger.zig").logFn;
 
-const print = std.debug.print;
+pub const std_options: std.Options = .{
+    .logFn = dateLogFn,
+};
+
+const log = std.log;
 const parseInt = std.fmt.parseInt;
 const cwd = std.fs.cwd;
 const splitScalar = std.mem.splitScalar;
@@ -9,6 +13,8 @@ const tokenizeScalar = std.mem.tokenizeScalar;
 const ArrayList = std.ArrayList;
 const HashMap = std.HashMap;
 const eql = std.mem.eql;
+
+const RuntimeStarsAndBars = @import("stars_and_bars.zig").RuntimeStarsAndBars;
 
 var gpa_impl = std.heap.GeneralPurposeAllocator(.{}){};
 var gpa = gpa_impl.allocator();
@@ -100,18 +106,17 @@ const Machine = struct {
     pub fn printContents(self: Self) !void {
         // Convert bitmap to "wantstr"
         const wantStr = bmstr(u32, self.want, self.w)[0..self.w];
-        std.debug.print("[{s}]\n", .{wantStr});
+        log.info("[{s}]", .{wantStr});
 
         // Print toggles
         for (self.pushEffectBits) |toggle| {
             const s = bmstr(u32, toggle, self.w)[0..self.w];
-            std.debug.print("({s})\n", .{s});
+            log.info("({s})", .{s});
         }
 
         // Print energy
-        std.debug.print("{any} \n", .{self.power});
-
-        std.debug.print("\n", .{});
+        log.info("{any}", .{self.power});
+        log.info("", .{});
     }
 };
 
@@ -132,24 +137,14 @@ fn solve1(m: Machine) !u32 {
         next.clearRetainingCapacity();
 
         for (curr.items) |x| {
-            for (m.pushEffectBits, 0..) |t, i| {
+            for (m.pushEffectBits) |t| {
                 const y = x ^ t;
-                _ = i;
-                // print("{s} ^ {s}[{d}] -> {s}", .{
-                //     bmstr(u32, x, m.w)[0..m.w],
-                //     bmstr(u32, t, m.w)[0..m.w],
-                //     i,
-                //     bmstr(u32, y, m.w)[0..m.w],
-                // });
                 if (y == m.want) {
-                    // print(" (MATCH!)\n", .{});
                     return k;
                 }
                 if (seen[y] == 1) {
-                    // print(" (Seen)\n", .{});
                     continue;
                 }
-                // print(" (New)\n", .{});
                 seen[y] = 1;
                 try next.append(gpa, y);
             }
@@ -160,292 +155,6 @@ fn solve1(m: Machine) !u32 {
         next = tmp;
     }
     unreachable;
-}
-
-pub fn solve2(m: Machine) !struct {
-    score: f64,
-    maxPushGroupSize: u32,
-    res: u32,
-} {
-    // This part has two phases:
-    //
-    // 1. Find the most effective search order. The most effective search order
-    //    minimizes the number of power indices to consider at each position.
-    //
-    // 2. Execute the search.
-    //
-
-    // var powerPushIndices = gpa.alloc(ArrayList)
-    const plan = try solve2_findSearchPlan(gpa, m);
-    var maxPushGroupSize: u32 = 0;
-    for (plan.plan) |item| {
-        maxPushGroupSize = @max(maxPushGroupSize, item.npushes);
-    }
-
-    print("Running search for score {d}\n", .{plan.score});
-    const result = try solve2_minimizeSteps(gpa, m, plan.plan);
-    print("Result!! {d}\n", .{result});
-
-    return .{
-        .score = plan.score,
-        .maxPushGroupSize = maxPushGroupSize,
-        .res = result,
-    };
-}
-
-fn solve2_minimizeSteps(allocator: std.mem.Allocator, m: Machine, searchPlan: []SearchStep) !u32 {
-    var mem = std.AutoHashMap([16]u16, u32).init(allocator);
-    defer mem.deinit();
-    var wantPower: [16]u16 = .{0} ** 16;
-    for (0..m.power.len) |i| {
-        wantPower[i] = m.power[i];
-    }
-    const currPower: [16]u16 = .{0} ** 16;
-    var pushPowerDelta: [16][16]u1 = undefined;
-    for (m.pushEffects, 0..) |powerIndices, i| {
-        pushPowerDelta[i] = .{0} ** 16;
-        for (powerIndices) |powerIdx| {
-            pushPowerDelta[i][powerIdx] = 1;
-        }
-    }
-
-    return solve2_minimizeSteps_dfs(&mem, 0, m.w, currPower, &wantPower, searchPlan, &pushPowerDelta);
-}
-
-fn addArrays(comptime T1: type, comptime T2: type, comptime n: usize, a: [n]T1, b: [n]T2) [n]T1 {
-    var res: [n]T1 = .{0} ** n;
-    for (0..n) |i| {
-        res[i] = a[i] + b[i];
-    }
-    return res;
-}
-
-fn solve2_minimizeSteps_dfs(
-    mem: *std.AutoHashMap([16]u16, u32),
-    planIdx: usize,
-    npower: usize,
-    currPower: [16]u16,
-    wantPower: *[16]u16,
-    plan: []SearchStep,
-    pushPowerDelta: *[16][16]u1,
-) !u32 {
-    if (planIdx == plan.len) {
-        // print("Found a result!\n", .{});
-        return 0;
-    }
-    // print("npushes: {d}\n", .{plan[planIdx].npushes});
-    // print("plan[planIdx] = plan[{d}] = {any}\n", .{ planIdx, plan[planIdx] });
-    if (mem.get(currPower)) |res| {
-        // print("curr Power seen!\n", .{});
-        return res;
-    }
-
-    var res: u32 = std.math.maxInt(u30);
-    const step = plan[planIdx];
-
-    // Check if prior pushes caused and issue for this index.
-    if (currPower[step.powerIdx] > wantPower[step.powerIdx]) {
-        return std.math.maxInt(u30);
-    }
-
-    // Check if this position is already aiight
-    if (currPower[step.powerIdx] == wantPower[step.powerIdx]) {
-        // print("Done with powerIdx {d}\n", .{step.powerIdx});
-        // continue to next step of the plan.
-        return try solve2_minimizeSteps_dfs(mem, planIdx + 1, npower, currPower, wantPower, plan, pushPowerDelta);
-    }
-
-    // At this stage, we need to push some buttons.
-    // But maybe we can't?
-    if (step.npushes == 0) {
-        return std.math.maxInt(u30);
-    }
-
-    // Or we can, in which case, let's iterate over combinations of pushes that sum to the total
-    // needed for this position
-    const missingPower = wantPower[step.powerIdx] - currPower[step.powerIdx];
-    var combIterator = try RuntimeStarsAndBars(u16).init(gpa, missingPower, step.npushes);
-    while (combIterator.next()) |comb| {
-        // print("Missing {d} power for index {d}\n", .{ missingPower, step.powerIdx });
-        // print("Can achieve this by adding push groups {any}\n", .{step.pushIndices[0..step.npushes]});
-        // print("Want:\t{any}\n", .{wantPower});
-        // print("Got:\t{any}\n", .{currPower});
-
-        var nextPower: [16]u16 = undefined;
-        @memcpy(&nextPower, &currPower);
-        for (comb, 0..) |groupCount, i| {
-            // push groupCount items from the i'th push in the plan
-            const pushIndex = step.pushIndices[i];
-            const pushDelta = pushPowerDelta[pushIndex];
-            // print("Add:\t{any} x {d} (Group {d})\n", .{ pushDelta[0..npower], groupCount, pushIndex });
-            for (pushDelta, 0..) |val, j| {
-                nextPower[j] += val * groupCount;
-            }
-        }
-        // print("Result:\t{any})\n", .{nextPower});
-
-        var subRes = try solve2_minimizeSteps_dfs(mem, planIdx, npower, nextPower, wantPower, plan, pushPowerDelta);
-        subRes += missingPower;
-        res = @min(
-            res,
-            subRes,
-        );
-    }
-
-    // Try taking each step available in the plan.
-    try mem.put(currPower, res);
-    return res;
-}
-
-const invalidPushIdx = 1337;
-
-const SearchStep = struct {
-    powerIdx: usize,
-    npushes: u32,
-    pushIndices: [11]usize,
-};
-
-fn solve2_findSearchPlan(
-    allocator: std.mem.Allocator,
-    m: Machine,
-) !struct {
-    score: f64,
-    plan: []SearchStep,
-} {
-    // To find the most effective search order, we can perform dfs.
-    const visited = try allocator.alloc(bool, m.w);
-    defer allocator.free(visited);
-    @memset(visited, false);
-
-    const pushUsed = try allocator.alloc(bool, m.pushEffects.len);
-    defer allocator.free(pushUsed);
-    @memset(pushUsed, false);
-
-    const bestSearchPlan = try allocator.alloc(SearchStep, m.w);
-    @memset(bestSearchPlan, .{
-        .powerIdx = 100,
-        .npushes = 0,
-        .pushIndices = .{invalidPushIdx} ** 11,
-    });
-
-    const currentSearchPlan: []SearchStep = try allocator.dupe(SearchStep, bestSearchPlan);
-    defer allocator.free(currentSearchPlan);
-
-    // Convert push indices to map from power indices to push indices
-    var powerToPushIdxBuf: [16][16]usize = undefined;
-    var powerToPushLen: [16]usize = .{0} ** 16;
-    for (m.pushEffects, 0..) |powerIndices, pushIdx| {
-        for (powerIndices) |powerIdx| {
-            powerToPushIdxBuf[powerIdx][powerToPushLen[powerIdx]] = pushIdx;
-            powerToPushLen[powerIdx] += 1;
-        }
-    }
-
-    const powerToPushIdx: [][]usize = try allocator.alloc([]usize, m.w);
-    for (powerToPushIdx, 0..) |*pushIndices, i| {
-        pushIndices.* = powerToPushIdxBuf[i][0..powerToPushLen[i]];
-    }
-
-    var bestScore: f64 = std.math.floatMax(f64);
-
-    try solve2_findSearchPlan_dfs(
-        visited,
-        pushUsed,
-        powerToPushIdx,
-        currentSearchPlan,
-        bestSearchPlan,
-        &bestScore,
-        0,
-        1,
-    );
-
-    return .{
-        .score = bestScore,
-        .plan = bestSearchPlan,
-    };
-}
-
-fn fac(x: u64) f64 {
-    var res: f64 = 1;
-    for (1..x) |i| {
-        res *= @floatFromInt(i);
-    }
-    return res;
-}
-
-fn solve2_findSearchPlan_dfs(
-    visited: []bool,
-    pushUsed: []bool,
-    powerPushIndices: [][]usize,
-    currentSearchPlan: []SearchStep,
-    bestSearchPlan: []SearchStep,
-    bestScore: *f64,
-    searchIdx: usize,
-    score: f64,
-) !void {
-    if (score >= bestScore.*) {
-        return; // no point continuing
-    }
-    const npower = powerPushIndices.len;
-    if (searchIdx == npower) {
-        // Score is smaller than before + no more power needed.
-        // Capture search order
-        for (0..currentSearchPlan.len) |i| {
-            bestSearchPlan[i] = currentSearchPlan[i];
-        }
-        bestScore.* = score;
-        // print("Found a new lowest score: {d}\n", .{score});
-        return;
-    }
-
-    // For each power index
-    for (0..npower) |powerIdx| {
-        if (visited[powerIdx]) {
-            continue;
-        }
-        visited[powerIdx] = true;
-
-        currentSearchPlan[searchIdx].powerIdx = powerIdx;
-
-        // Add unused push indices to the search order
-        var pushInsertIdx: u64 = 0;
-        for (powerPushIndices[powerIdx]) |pushIdx| {
-            if (pushUsed[pushIdx]) {
-                continue;
-            }
-            currentSearchPlan[searchIdx].pushIndices[pushInsertIdx] = pushIdx;
-            pushInsertIdx += 1;
-            pushUsed[pushIdx] = true;
-        }
-        // print("currentSearchPlan: {any}\n", .{currentSearchPlan[searchIdx]});
-        // print("currentSearchPlan[searchIdx][0]: {any}\n", .{currentSearchPlan[searchIdx].pushIndices[0]});
-        // print("visited: {any}\n", .{visited});
-        // print("pushUsed: {any}\n", .{pushUsed});
-        currentSearchPlan[searchIdx].npushes = @truncate(pushInsertIdx);
-        const npushes = pushInsertIdx;
-
-        // Try visiting this power index at this time
-        try solve2_findSearchPlan_dfs(
-            visited,
-            pushUsed,
-            powerPushIndices,
-            currentSearchPlan,
-            bestSearchPlan,
-            bestScore,
-            searchIdx + 1,
-            score * fac(npushes + 1),
-        );
-
-        // Reset changes
-        visited[powerIdx] = false;
-
-        // print("currentSearchPlan[searchIdx]: {any}\n", .{currentSearchPlan[searchIdx]});
-        for (0..npushes) |i| {
-            const pushIdx = currentSearchPlan[searchIdx].pushIndices[i];
-            pushUsed[pushIdx] = false;
-            currentSearchPlan[searchIdx].pushIndices[i] = invalidPushIdx;
-        }
-    }
 }
 
 pub fn bmstr(comptime T: type, bm: T, w: T) [@bitSizeOf(T)]u8 {
@@ -474,9 +183,21 @@ pub fn main() !void {
     }
     lines.reset();
 
+    var maxStates: f64 = 0;
+    while (lines.next()) |line| {
+        const m = try Machine.parse(gpa, line);
+        var res: f64 = 1;
+        for (m.power) |p| {
+            res *= @floatFromInt(p);
+        }
+        maxStates = @max(maxStates, res);
+    }
+    log.info("Max states: {e}\n", .{maxStates});
+    lines.reset();
+
     var i: usize = 1;
     while (lines.next()) |line| {
-        print("Finding result for machine {d} of {d}\n", .{ i, n });
+        log.info("Finding result for machine {d} of {d}", .{ i, n });
         const m = try Machine.parse(gpa, line);
         // try m.printContents();
         res1 += try solve1(m);
@@ -486,8 +207,8 @@ pub fn main() !void {
         maxScore = @max(maxScore, resStruct.score);
         i += 1;
     }
-    print("MaxScore:\n{d}\n", .{maxScore});
-    print("MaxPushGroupSize:\n{d}\n", .{maxPushGroupSize});
-    print("Result1:\n{d}\n", .{res1});
-    print("Result2:\n{d}\n", .{res2});
+    log.info("MaxScore: {d}", .{maxScore});
+    log.info("MaxPushGroupSize: {d}", .{maxPushGroupSize});
+    log.info("Result1: {d}", .{res1});
+    log.info("Result2: {d}", .{res2});
 }
