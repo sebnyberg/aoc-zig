@@ -236,8 +236,6 @@ fn parseExample(comptime T: type, alloc: std.mem.Allocator, s: []const u8) !Equa
     return eq;
 }
 
-const row13 = "[##.##.....] (1,2,3,4,9) (0,7) (0,3,8,9) (0,2) (0,1,8) (1,2,9) (0,2,3,5,6,7,8) (0,1,3,4,6,7) (7) (0,2,3,4,5,6,7,8) (0,1,3,7,8,9) (0,1,2,3,4,5,8,9) (0,1,3,4,6,7,9) {79,44,43,71,37,21,28,61,55,60}";
-
 test "SolveInput" {
     const contents = try std.fs.cwd().readFileAlloc(std.testing.allocator, "./input", 1024 * 1024);
     defer std.testing.allocator.free(contents);
@@ -245,7 +243,7 @@ test "SolveInput" {
     var rows = std.mem.tokenizeScalar(u8, contents, '\n');
     var k: u64 = 0;
 
-    const filter = [_]usize{};
+    const filter = [_]usize{21};
     while (rows.next()) |row| : (k += 1) {
         if (filter.len > 0) {
             var ok = false;
@@ -365,6 +363,8 @@ fn LinEqSolver(comptime T: type) type {
                         }
                         self.eq.lhs[pivot][j] = try val.div(factor);
                     }
+                    // Also normalize the RHS
+                    self.eq.rhs[pivot] = try self.eq.rhs[pivot].div(factor);
                 }
 
                 // Eliminate entries in this column from other rows by
@@ -384,8 +384,8 @@ fn LinEqSolver(comptime T: type) type {
                         self.eq.lhs[rowIdx][colIdx] = try current.sub(pivot_val);
                     }
                     const current_rhs = self.eq.rhs[rowIdx];
-                    const pivot_rhs = self.eq.rhs[pivot];
-                    self.eq.rhs[rowIdx] = try current_rhs.sub(pivot_rhs);
+                    const pivot_rhs_scaled = try self.eq.rhs[pivot].mul(remove_factor);
+                    self.eq.rhs[rowIdx] = try current_rhs.sub(pivot_rhs_scaled);
                 }
             }
         }
