@@ -233,7 +233,6 @@ pub fn Frac(comptime T: type) type {
             // Or if the other argument is a signed integer
             const info = @typeInfo(Other);
             if (info == .int or info == .comptime_int) {
-                if (other == 0) return error.DivisionByZero;
                 const res = Self{
                     .a = self.a * other,
                     .b = self.b,
@@ -358,6 +357,27 @@ pub fn Frac(comptime T: type) type {
             } else {
                 return std.fmt.bufPrint(buf, "{d}/{d}", .{ self.a, self.b });
             }
+        }
+
+        /// Convert to integer by rounding down (floor division).
+        /// Use this for upper bounds.
+        pub fn toFloor(self: Self) T {
+            return @divFloor(self.a, self.b);
+        }
+
+        /// Convert to integer by rounding up (ceiling division).
+        /// Use this for lower bounds.
+        pub fn toCeil(self: Self) T {
+            if (self.a >= 0) {
+                return @divFloor(self.a + self.b - 1, self.b);
+            } else {
+                return @divFloor(self.a, self.b);
+            }
+        }
+
+        /// Check if this fraction represents an integer value.
+        pub fn isInteger(self: Self) bool {
+            return @rem(self.a, self.b) == 0;
         }
     };
 }
