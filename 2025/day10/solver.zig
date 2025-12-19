@@ -93,7 +93,7 @@ fn EquationSystem(comptime T: type) type {
     return struct {
         lhs: [][]Frac(T),
         rhs: []Frac(T),
-        eqs: []bounds.Comparison,
+        cmps: []bounds.Comparison,
         alloc: std.mem.Allocator,
         allocated_rows: usize,
         const Self = @This();
@@ -102,7 +102,7 @@ fn EquationSystem(comptime T: type) type {
             const zeroFrac = try Frac(T).init(0, 1);
 
             const lhs = try alloc.alloc([]Frac(T), num_eqs);
-            const eqs = try alloc.alloc(bounds.Comparison, num_eqs);
+            const cmps = try alloc.alloc(bounds.Comparison, num_eqs);
             for (lhs, 0..) |_, i| {
                 lhs[i] = try alloc.alloc(Frac(T), num_vars);
                 for (0..lhs[i].len) |j| {
@@ -112,12 +112,12 @@ fn EquationSystem(comptime T: type) type {
             const rhs = try alloc.alloc(Frac(T), num_eqs);
             for (0..rhs.len) |i| {
                 rhs[i] = zeroFrac;
-                eqs[i] = .Equal;
+                cmps[i] = .Equal;
             }
             return Self{
                 .lhs = lhs,
                 .rhs = rhs,
-                .eqs = eqs,
+                .cmps = cmps,
                 .alloc = alloc,
                 .allocated_rows = num_eqs,
             };
@@ -148,7 +148,7 @@ fn EquationSystem(comptime T: type) type {
             }
             self.rhs[target].mul(factor);
 
-            if (self.eqs[target] == .Equal) {
+            if (self.cmps[target] == .Equal) {
                 return;
             }
 
@@ -165,7 +165,7 @@ fn EquationSystem(comptime T: type) type {
                 }
             }
             // Flip equality.
-            self.eqs[target] = self.eqs[target].flip();
+            self.cmps[target] = self.cmps[target].flip();
         }
 
         pub fn removeRow(self: *Self, idx: usize) !void {
@@ -214,14 +214,14 @@ fn EquationSystem(comptime T: type) type {
             // Use original allocation pointers and sizes
             const orig_lhs = self.lhs.ptr[0..self.allocated_rows];
             const orig_rhs = self.rhs.ptr[0..self.allocated_rows];
-            const orig_eqs = self.eqs.ptr[0..self.allocated_rows];
+            const orig_cmps = self.cmps.ptr[0..self.allocated_rows];
 
             for (orig_lhs) |row| {
                 self.alloc.free(row);
             }
             self.alloc.free(orig_lhs);
             self.alloc.free(orig_rhs);
-            self.alloc.free(orig_eqs);
+            self.alloc.free(orig_cmps);
         }
 
         pub fn print(self: *Self) void {
@@ -232,7 +232,7 @@ fn EquationSystem(comptime T: type) type {
                     const str = self.lhs[i][j].format(&buf) catch unreachable;
                     std.debug.print("{s:>6} ", .{str});
                 }
-                const sym = self.eqs[i].symbol();
+                const sym = self.cmps[i].symbol();
                 std.debug.print("{s:>2} ", .{sym});
                 const rhs_str = self.rhs[i].format(&buf) catch unreachable;
                 std.debug.print("{s:>6}", .{rhs_str});
@@ -272,6 +272,7 @@ fn EquationSystem(comptime T: type) type {
                     }
 
                     // We can safely ignore the rest of the system.
+                    // TODO: REMOVE THIS
                     while (self.nrows() > pivot) {
                         try self.removeRow(self.nrows() - 1);
                     }
@@ -428,35 +429,115 @@ fn LinEqSolver(comptime T: type) type {
         }
 
         fn findBounds(self: *Self, alloc: std.mem.Allocator) ![]bounds.Variable(T) {
-            const nfree = self.eq.ncols() - self.eq.nrows();
-
             // The goal now is to create bounds for free variables.
+            const nfree = self.eq.ncols() - self.eq.nrows();
             const variables = try alloc.alloc(bounds.Variable(T), nfree);
-
             if (nfree == 0) {
                 return variables;
             }
-
             defer alloc.free(variables);
 
-            // Allocate IDs for each variable (need to free these later)
-            const variableIds = try alloc.alloc([]u8, nfree);
-            defer {
-                for (variableIds) |id| {
-                    alloc.free(id);
+            // Let's create an equation system for the free variables
+            //
+            // We know that
+            // x_i + coeff_j*x_j + coeff_k*x_k + ... = b_i
+            //
+            // Which gives
+            // x_i = b_i - coeff_j*x_j + coeff_k*x_k + ...
+            //
+            // We know that x_i >= 0, which means that
+            // 0 <= b_i - coeff_j*x_j + ...
+            //
+            // Which means that
+            // coeff_j*x_j + coeff_k*x_k + ... <= b_i
+            //
+            // This gives a system of equations, once again, but for free variables
+            //
+            // Unless we have more free variables than we have basic ones, we know
+            // that there is a way to isolate these variables to form a system of
+            // bounds. There are probably more complex ways to form bounds, too,
+            // but at least this gives us an idea of where to search.
+
+            const n = nfree;
+
+            // Capture indices of rows that have free variables
+            var free_row_idxs = std.ArrayList(usize){};
+            defer free_row_idxs.deinit(alloc);
+            outer: for (0..self.eq.nrows()) |i| {
+                for (0..n) |j| {
+                    if (!self.eq.lhs[i][self.eq.nrows() + j].iszero()) {
+                        try free_row_idxs.append(alloc, i);
+                        continue :outer;
+                    }
                 }
-                alloc.free(variableIds);
+            }
+            const m = free_row_idxs.items.len;
+            std.debug.print("{any}\n", .{free_row_idxs.items});
+
+            // Create the equation system
+            var eqs = try EquationSystem(T).init(alloc, m, n);
+            defer eqs.deinit();
+            for (0..m) |i| {
+                const k = free_row_idxs.items[i];
+                for (0..n) |j| {
+                    eqs.lhs[i][j] = self.eq.lhs[k][self.eq.nrows() + j];
+                }
+                eqs.rhs[i] = self.eq.rhs[k];
+                eqs.cmps[i] = .LessThanOrEqual;
+            }
+            eqs.print();
+
+            // For each free variable
+            for (0..nfree) |j| {
+
+                // Normalize all rows so that the first column reads -1 or 1
+                // This is so that comparisons are possible between rows.
+                for (0..m) |i| {
+
+                    // Find factor
+                    const factor = for (0..nfree) |k| {
+                        if (!eqs.lhs[i][k].iszero()) {
+                            const cell = eqs.lhs[i][k];
+                            if (cell.a < 0) {
+                                break try cell.mul(-1);
+                            }
+                            break cell;
+                        }
+                    } else unreachable;
+
+                    for (0..nfree) |k| {
+                        eqs.lhs[i][k] = try eqs.lhs[i][k].div(factor);
+                    }
+                }
+
+                _ = j;
             }
 
-            for (0..variables.len) |i| {
-                const id = try std.fmt.allocPrint(alloc, "x_{d}", .{self.eq.nrows() + i});
-                variableIds[i] = id;
-                variables[i] = bounds.Variable(T).init(id);
-                variables[i].lo = try Frac(T).init(0, 1); // every variable must be >= 0;
-            }
+            eqs.print();
 
-            const m = self.eq.nrows();
-            const n = self.eq.ncols();
+            return variables;
+
+            //
+            //
+            //
+            // // Allocate IDs for each variable (need to free these later)
+            // const variableIds = try alloc.alloc([]u8, nfree);
+            // defer {
+            //     for (variableIds) |id| {
+            //         alloc.free(id);
+            //     }
+            //     alloc.free(variableIds);
+            // }
+            //
+            // for (0..variables.len) |i| {
+            //     const id = try std.fmt.allocPrint(alloc, "x_{d}", .{self.eq.nrows() + i});
+            //     variableIds[i] = id;
+            //     variables[i] = bounds.Variable(T).init(id);
+            //     variables[i].lo = try Frac(T).init(0, 1); // every variable must be >= 0;
+            // }
+            //
+            // const m = self.eq.nrows();
+            // const n = self.eq.ncols();
 
             // For a given pivot (i)
             //
@@ -469,45 +550,45 @@ fn LinEqSolver(comptime T: type) type {
             // In other words, the result of subtracting everything from RHS
             // except the variable x_i must be greater than zero:
             //
-            // rhs_i - c_ij*free_ij + c_ik*free_ik + ... >= 0
+            // rhs_i - c_ij*free_ij - c_ik*free_ik + ... >= 0
             // <=>
             // c_ij*free_ij + c_ik*free_ik + ... <= RHS
             //
-
-            for (self.eq.rhs, 0..) |val, i| {
-                _ = val;
-                var variableCount: u64 = 0;
-                for (m..n) |j| {
-                    if (!self.eq.lhs[i][j].iszero()) {
-                        variableCount += 1;
-                    }
-                }
-                if (variableCount > 1) {
-                    continue;
-                }
-                for (m..n) |j| {
-                    if (self.eq.lhs[i][j].iszero()) {
-                        continue;
-                    }
-                    const k = j - m; // free index
-                    _ = try variables[k].consider(self.eq.lhs[i][j], self.eq.rhs[i], bounds.Comparison.LessThanOrEqual);
-                }
-            }
-
-            // Check that at least one variable has an upper bound.
-            var hasUpper = false;
-            for (variables) |x| {
-                if (x.hi != null) {
-                    hasUpper = true;
-                    // try x.print();
-                }
-            }
-            if (!hasUpper) {
-                std.debug.print("Found no upper-bound!! \n", .{});
-                // return error.NoSolution;
-            }
-
-            return variables;
+            //
+            // for (self.eq.rhs, 0..) |val, i| {
+            //     _ = val;
+            //     var variableCount: u64 = 0;
+            //     for (m..n) |j| {
+            //         if (!self.eq.lhs[i][j].iszero()) {
+            //             variableCount += 1;
+            //         }
+            //     }
+            //     if (variableCount > 1) {
+            //         continue;
+            //     }
+            //     for (m..n) |j| {
+            //         if (self.eq.lhs[i][j].iszero()) {
+            //             continue;
+            //         }
+            //         const k = j - m; // free index
+            //         _ = try variables[k].consider(self.eq.lhs[i][j], self.eq.rhs[i], bounds.Comparison.LessThanOrEqual);
+            //     }
+            // }
+            //
+            // // Check that at least one variable has an upper bound.
+            // var hasUpper = false;
+            // for (variables) |x| {
+            //     if (x.hi != null) {
+            //         hasUpper = true;
+            //         // try x.print();
+            //     }
+            // }
+            // if (!hasUpper) {
+            //     std.debug.print("Found no upper-bound!! \n", .{});
+            //     // return error.NoSolution;
+            // }
+            //
+            // return variables;
         }
     };
 }
