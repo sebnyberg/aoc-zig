@@ -128,13 +128,16 @@ fn EquationSystem(comptime T: type) type {
         }
 
         /// addRows adds the row "source" factor times to row "target"
-        pub fn addRows(self: *Self, target: usize, source: usize, factor: T) !void {
+        pub fn addRows(self: *Self, target: usize, source: usize, factor: Frac(T)) !void {
             for (0..self.ncols()) |j| {
                 const delta = try self.lhs[source][j].mul(factor);
-                self.lhs[target][j].add(delta);
+                self.lhs[target][j] = try self.lhs[target][j].add(delta);
             }
             const rhsDelta = try self.rhs[source].mul(factor);
-            self.rhs[target].add(rhsDelta);
+            // std.debug.print("\n", .{});
+            // printFrac(T, rhsDelta);
+            // std.debug.print("\n", .{});
+            self.rhs[target] = try self.rhs[target].add(rhsDelta);
         }
 
         /// mulRows multiplies a row with a factor
@@ -213,6 +216,90 @@ fn EquationSystem(comptime T: type) type {
                 const rhs_str = self.rhs[i].format(&buf) catch unreachable;
                 std.debug.print("{s:>6}", .{rhs_str});
                 std.debug.print("\n", .{});
+            }
+        }
+
+        /// rref converts the equation system to reduced row echelon form.
+        fn rref(self: *Self) !void {
+            var k: u64 = 0;
+            const npivot = @min(self.ncols(), self.nrows());
+
+            for (0..npivot) |pivot| {
+                k += 1;
+
+                // Find first non-zero entry to swap into this position
+                var found = false;
+                outer: for (pivot..self.ncols()) |j| {
+                    for (pivot..npivot) |i| {
+                        if (!self.lhs[i][j].iszero()) {
+                            try self.swapCols(pivot, j);
+                            try self.swapRows(pivot, i);
+                            found = true;
+                            break :outer;
+                        }
+                    }
+                }
+
+                if (!found) {
+                    // If there are no non-zero pivots and RHS is zero
+                    // -> no solution
+                    for (pivot..npivot) |i| {
+                        if (!self.rhs[i].iszero()) {
+                            self.print();
+                            return error.NoSolution;
+                        }
+                    }
+
+                    // We can safely ignore the rest of the system.
+                    // TODO: remove this after refactor.
+                    while (self.nrows() > pivot) {
+                        try self.removeRow(self.nrows() - 1);
+                    }
+                    break;
+                }
+
+                // Normalize pivot row
+                {
+                    const factor = self.lhs[pivot][pivot];
+
+                    for (0..self.ncols()) |j| {
+                        const val = self.lhs[pivot][j];
+                        if (val.equals(0)) {
+                            continue;
+                        }
+                        self.lhs[pivot][j] = try val.div(factor);
+                    }
+                    // Also normalize the RHS
+                    self.rhs[pivot] = try self.rhs[pivot].div(factor);
+                }
+
+                // Eliminate entries in this column from other rows by
+                // removing this row from other rows as needed.
+                for (0..self.nrows()) |rowIdx| {
+                    if (rowIdx == pivot or self.lhs[rowIdx][pivot].equals(0)) {
+                        continue;
+                    }
+
+                    const remove_factor = try self.lhs[rowIdx][pivot].mul(-1);
+
+                    // Eliminate this entry by subtracting the pivot row
+                    try self.addRows(rowIdx, pivot, remove_factor);
+
+                    // for (pivot..self.ncols()) |colIdx| {
+                    //     const current = self.lhs[rowIdx][colIdx];
+                    //
+                    //     const pivot_val = try self.lhs[pivot][colIdx].mul(remove_factor);
+                    //     self.lhs[rowIdx][colIdx] = try current.sub(pivot_val);
+                    // }
+                    // const current_rhs = self.rhs[rowIdx];
+                    // const pivot_rhs_scaled = try self.rhs[pivot].mul(remove_factor);
+                    // self.rhs[rowIdx] = try current_rhs.sub(pivot_rhs_scaled);
+                }
+            }
+
+            // Finally, remove empty rows
+            while (self.nrows() > self.ncols()) {
+                try self.removeRow(self.nrows() - 1);
             }
         }
     };
@@ -318,7 +405,7 @@ fn LinEqSolver(comptime T: type) type {
         pub fn solve(self: *Self, alloc: std.mem.Allocator, result: []T) !void {
             // To solve this linear equation system, we start with converting the systems
             // to reduced row echelon form.
-            try self.rref();
+            try self.eq.rref();
 
             // self.eq.print();
 
@@ -411,85 +498,6 @@ fn LinEqSolver(comptime T: type) type {
             }
 
             return variables;
-        }
-
-        fn rref(self: *Self) !void {
-            var k: u64 = 0;
-            const npivot = @min(self.eq.ncols(), self.eq.nrows());
-
-            for (0..npivot) |pivot| {
-                // std.debug.print("Iteration {d}\n", .{k});
-                k += 1;
-                // self.eq.print();
-
-                // Find first non-zero entry to swap into this position
-                var found = false;
-                outer: for (pivot..self.eq.ncols()) |j| {
-                    for (pivot..npivot) |i| {
-                        if (!self.eq.lhs[i][j].iszero()) {
-                            try self.eq.swapCols(pivot, j);
-                            try self.eq.swapRows(pivot, i);
-                            found = true;
-                            break :outer;
-                        }
-                    }
-                }
-                if (!found) {
-                    // TODO: if the value (RHS) is non-zero, then no solution exists,
-                    // but that should never happen, right?
-                    for (pivot..npivot) |i| {
-                        if (!self.eq.rhs[i].iszero()) {
-                            return error.NoSolution;
-                        }
-                    }
-
-                    // We can safely ignore the rest of the system.
-                    while (self.eq.nrows() > pivot) {
-                        try self.eq.removeRow(self.eq.nrows() - 1);
-                    }
-                    break;
-                }
-
-                // Normalize pivot row
-                {
-                    const factor = self.eq.lhs[pivot][pivot];
-                    for (0..self.eq.ncols()) |j| {
-                        const val = self.eq.lhs[pivot][j];
-                        if (val.equals(0)) {
-                            continue;
-                        }
-                        self.eq.lhs[pivot][j] = try val.div(factor);
-                    }
-                    // Also normalize the RHS
-                    self.eq.rhs[pivot] = try self.eq.rhs[pivot].div(factor);
-                }
-
-                // Eliminate entries in this column from other rows by
-                // removing this row from other rows as needed.
-                for (0..self.eq.nrows()) |rowIdx| {
-                    if (rowIdx == pivot or self.eq.lhs[rowIdx][pivot].equals(0)) {
-                        continue;
-                    }
-
-                    const remove_factor = self.eq.lhs[rowIdx][pivot];
-
-                    // Eliminate this entry by subtracting the pivot row
-                    for (pivot..self.eq.ncols()) |colIdx| {
-                        const current = self.eq.lhs[rowIdx][colIdx];
-
-                        const pivot_val = try self.eq.lhs[pivot][colIdx].mul(remove_factor);
-                        self.eq.lhs[rowIdx][colIdx] = try current.sub(pivot_val);
-                    }
-                    const current_rhs = self.eq.rhs[rowIdx];
-                    const pivot_rhs_scaled = try self.eq.rhs[pivot].mul(remove_factor);
-                    self.eq.rhs[rowIdx] = try current_rhs.sub(pivot_rhs_scaled);
-                }
-            }
-
-            // Finally, remove empty rows
-            while (self.eq.nrows() > self.eq.ncols()) {
-                try self.eq.removeRow(self.eq.nrows() - 1);
-            }
         }
     };
 }
