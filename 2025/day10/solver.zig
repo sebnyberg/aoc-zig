@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Frac = @import("frac.zig").Frac;
+const bounds = @import("bounds.zig");
 
 test "parseExample" {
     var eq = try parseExample(i8, std.testing.allocator, "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}");
@@ -243,7 +244,7 @@ test "SolveInput" {
     var rows = std.mem.tokenizeScalar(u8, contents, '\n');
     var k: u64 = 0;
 
-    const filter = [_]usize{61};
+    const filter = [_]usize{ 1, 2, 3 };
     while (rows.next()) |row| : (k += 1) {
         if (filter.len > 0) {
             var ok = false;
@@ -274,90 +275,10 @@ const LinEqSolverErrors = error{
     NoSolution,
 };
 
-const Equality = enum {
-    LessThanOrEqual,
-    LessThan,
-    Equal,
-    GreaterThanOrEqual,
-    GreaterThan,
-};
-
 fn printFrac(comptime T: type, a: Frac(T)) void {
     var buf = [_]u8{0} ** 128;
     const s = a.format(&buf) catch unreachable;
     std.debug.print("{s}", .{s});
-}
-
-fn BoundedVariable(comptime T: type) type {
-    return struct {
-        const Self = @This();
-
-        id: []const u8,
-        hi: ?Frac(T) = null,
-        lo: ?Frac(T) = null,
-
-        pub fn init(id: []const u8) Self {
-            return Self{
-                .id = id,
-            };
-        }
-
-        pub fn flipEq(eq: Equality) Equality {
-            return switch (eq) {
-                .LessThanOrEqual => .GreaterThanOrEqual,
-                .LessThan => .GreaterThan,
-                .GreaterThanOrEqual => .LessThanOrEqual,
-                .GreaterThan => .LessThan,
-                .Equal => .Equal,
-            };
-        }
-
-        pub fn consider(self: *Self, coeff: Frac(T), other: Frac(T), eq: Equality) !bool {
-            if (coeff.a == 0) {
-                std.log.warn("Ignored a zero coefficient for {s}\n", .{self.id});
-                return;
-            }
-
-            // Divide other by coeff.
-            other = other.div(coeff);
-            if (coeff.a < 0) {
-                eq = Self.flipEq(eq);
-            }
-
-            var str_buf = [_]u8{0} ** 16;
-            const other_str = other.format(&str_buf);
-            var changed = false;
-
-            switch (eq) {
-                .Equal => {
-                    if (self.lo == null) {
-                        self.lo = other;
-                        changed = true;
-                    }
-                    if (self.hi == null) {
-                        self.hi = other;
-                        changed = true;
-                    }
-                    switch (self.hi.?.cmp(other)) {
-                        .less => {
-                            std.log.err("Upper bound for {s} ({d}) is lower than equality condition (={s})", .{
-                                self.id,
-                                self.hi.?,
-                                other_str,
-                            });
-                            return error.OutOfBounds;
-                        },
-                        .greater => {
-                            self.hi = other;
-                            changed = true;
-                        },
-                        .eual => {},
-                    }
-                    if (self.hi.?.cmp(other) == .less) {}
-                },
-            }
-        }
-    };
 }
 
 fn LinEqSolver(comptime T: type) type {
@@ -375,65 +296,67 @@ fn LinEqSolver(comptime T: type) type {
             // to reduced row echelon form.
             try self.rref();
 
-            std.debug.print("RREF:\n", .{});
             self.eq.print();
 
             const nfree = self.eq.ncols() - self.eq.nrows();
             std.debug.print("Number of free variables: {d}\n", .{nfree});
 
-            // The goal now is to create bounds for free variables.
-            const bounds = try alloc.alloc(BoundedVariable(T), nfree);
-            defer alloc.free(bounds);
-            var freeVariableBuf = [_]u8{0} ** 1024;
-            for (0..bounds.len) |i| {
-                const s = try std.fmt.bufPrint(&freeVariableBuf, "x_{d}", .{self.eq.nrows() + i});
-                bounds[i] = BoundedVariable(T).init(s);
+            if (nfree > 0) {
+                // The goal now is to create bounds for free variables.
+                const variables = try alloc.alloc(bounds.Variable(T), nfree);
+                defer alloc.free(variables);
+                var freeVariableBuf = [_]u8{0} ** 1024;
+                for (0..variables.len) |i| {
+                    const s = try std.fmt.bufPrint(&freeVariableBuf, "x_{d}", .{self.eq.nrows() + i});
+                    variables[i] = bounds.Variable(T).init(s);
+                    variables[i].lo = try Frac(T).init(0, 1); // every variable must be >= 0;
+                }
+
+                const m = self.eq.nrows();
+                const n = self.eq.ncols();
+
+                // For a given pivot (i)
+                //
+                // It's variable (x_i) must be greater than zero,
+                // x_i >= 0
+                //
+                // And its value is given by the equation
+                // x_i + c_ij*free_ij + c_ik*free_ik + ... = rhs_i
+                //
+                // In other words, the result of subtracting everything from RHS
+                // except the variable x_i must be greater than zero:
+                //
+                // rhs_i - c_ij*free_ij + c_ik*free_ik + ... >= 0
+                // <=>
+                // c_ij*free_ij + c_ik*free_ik + ... <= RHS
+                for (self.eq.rhs, 0..) |val, i| {
+                    _ = val;
+                    var variableCount: u64 = 0;
+                    for (m..n) |j| {
+                        if (!self.eq.lhs[i][j].iszero()) {
+                            variableCount += 1;
+                        }
+                    }
+                    if (variableCount > 1) {
+                        continue;
+                    }
+                    for (m..n) |j| {
+                        if (self.eq.lhs[i][j].iszero()) {
+                            continue;
+                        }
+                        const k = j - m; // free index
+                        const changed = try variables[k].consider(self.eq.lhs[i][j], self.eq.rhs[i], bounds.Equality.LessThanOrEqual);
+                        if (changed) {
+                            std.debug.print("Changed bound for x_{d}\n", .{k});
+                        }
+                    }
+                }
+
+                // Check that all variables were initialized
+                for (variables) |x| {
+                    try x.print();
+                }
             }
-
-            // const m = self.eq.nrows();
-            // const n = self.eq.ncols();
-
-            // For a given pivot (i)
-            //
-            // It's variable (x_i) must be greater than zero,
-            // x_i >= 0
-            //
-            // And its value is given by the equation
-            // x_i + c_ij*free_ij + c_ik*free_ik + ... = rhs_i
-            //
-            // In other words, the result of subtracting everything from RHS
-            // except the variable x_i must be greater than zero:
-            //
-            // rhs_i - c_ij*free_ij + c_ik*free_ik + ... >= 0
-            // <=>
-            // c_ij*free_ij + c_ik*free_ik + ... <= RHS
-            //
-            // Now, since each free variable must be >= 0, we can create
-            // an initial upper bound simply by iterating over RHS
-            // for (self.eq.rhs, 0..) |val, i| {
-            //     for (m..n) |j| {
-            //         if (self.eq.lhs[i][j].iszero()) {
-            //             continue;
-            //         }
-            //         const k = j - m; // free index
-            //         const cand = try val.div(self.eq.lhs[i][j]);
-            //         std.debug.print("\nCand: \n", .{});
-            //         printFrac(T, cand);
-            //         std.debug.print("\nPrevious: \n", .{});
-            //         printFrac(T, upperBounds[k]);
-            //         std.debug.print("\n\n", .{});
-            //         if (cand.cmp(upperBounds[k]) == .less) {
-            //             upperBounds[k] = cand;
-            //         }
-            //     }
-            // }
-            // var boundsChanged = true;
-            // while (boundsChanged) {
-            //     boundsChanged = false;
-            //
-            //     // Go through all rows, seeing if our understanding of upper bounds
-            //     // can help limit the rolution.
-            // }
 
             _ = result;
         }
