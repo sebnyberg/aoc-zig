@@ -91,6 +91,27 @@ test "frac format" {
     try std.testing.expectEqualStrings("0", str5);
 }
 
+test "frac cmp" {
+    const F = mustInitFrac(i16).init;
+
+    // Compare fractions with fractions
+    try std.testing.expectEqual(.equal, F(1, 2).cmp(F(1, 2)));
+    try std.testing.expectEqual(.equal, F(2, 4).cmp(F(1, 2))); // Both normalize to 1/2
+    try std.testing.expectEqual(.less, F(1, 3).cmp(F(1, 2)));
+    try std.testing.expectEqual(.greater, F(2, 1).cmp(F(1, 2)));
+    try std.testing.expectEqual(.less, F(-1, 2).cmp(F(1, 2)));
+    try std.testing.expectEqual(.greater, F(1, 2).cmp(F(-1, 2)));
+
+    // Compare fractions with integers
+    try std.testing.expectEqual(.equal, F(5, 1).cmp(5));
+    try std.testing.expectEqual(.equal, F(-10, 1).cmp(-10));
+    try std.testing.expectEqual(.equal, F(0, 1).cmp(0));
+    try std.testing.expectEqual(.less, F(1, 2).cmp(1));
+    try std.testing.expectEqual(.greater, F(3, 4).cmp(0));
+    try std.testing.expectEqual(.less, F(1, 2).cmp(2));
+    try std.testing.expectEqual(.greater, F(5, 2).cmp(2));
+}
+
 test "frac equals" {
     const F = mustInitFrac(i16).init;
 
@@ -116,6 +137,12 @@ const FracErrors = error{
     UnsupportedType,
     DivisionByZero,
     HasFraction,
+};
+
+pub const Ordering = enum {
+    less,
+    equal,
+    greater,
 };
 
 // Frac contains the fraction a / b
@@ -282,22 +309,45 @@ pub fn Frac(comptime T: type) type {
         }
 
         /// Compare this fraction with another fraction or signed integer.
-        /// Since fractions are normalized, comparison is straightforward.
-        pub fn equals(self: Self, other: anytype) bool {
+        /// Returns .less if self < other, .equal if self == other, .greater if self > other.
+        pub fn cmp(self: Self, other: anytype) Ordering {
             const Other = @TypeOf(other);
 
             // If comparing with another Frac
             if (Other == Self) {
-                return self.a == other.a and self.b == other.b;
+                // Compare a/b with c/d using cross-multiplication: a*d vs c*b
+                // Since denominators are always positive after normalization, this works correctly
+                const lhs = self.a * other.b;
+                const rhs = other.a * self.b;
+                if (lhs < rhs) {
+                    return .less;
+                } else if (lhs == rhs) {
+                    return .equal;
+                } else {
+                    return .greater;
+                }
             }
 
             // If comparing with a signed integer
             const info = @typeInfo(Other);
             if (info == .int or info == .comptime_int) {
-                return self.b == 1 and self.a == other;
+                // Compare a/b with integer n by comparing a with n*b
+                const rhs = other * self.b;
+                if (self.a < rhs) {
+                    return .less;
+                } else if (self.a == rhs) {
+                    return .equal;
+                } else {
+                    return .greater;
+                }
             }
 
-            return false;
+            @compileError("cmp: unsupported type");
+        }
+
+        /// Compare this fraction with another fraction or signed integer for equality.
+        pub fn equals(self: Self, other: anytype) bool {
+            return self.cmp(other) == .equal;
         }
 
         /// Format the fraction as a string. Returns just the numerator if denominator is 1,
