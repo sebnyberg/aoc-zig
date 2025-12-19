@@ -123,7 +123,7 @@ fn EquationSystem(comptime T: type) type {
             };
         }
 
-        pub fn nrows(self: *const Self) usize {
+        pub fn nrows(self: Self) usize {
             return self.lhs.len;
         }
 
@@ -180,7 +180,7 @@ fn EquationSystem(comptime T: type) type {
             self.rhs = self.rhs[0 .. self.rhs.len - 1];
         }
 
-        pub fn ncols(self: *const Self) usize {
+        pub fn ncols(self: Self) usize {
             if (self.lhs.len == 0) return 0;
             return self.lhs[0].len;
         }
@@ -241,82 +241,81 @@ fn EquationSystem(comptime T: type) type {
         }
 
         /// rref converts the equation system to reduced row echelon form.
-        fn rref(self: *Self) !void {
-            var k: u64 = 0;
+        /// This version matches Python's behavior: only row operations, no column swaps.
+        pub fn rref(self: *Self) !void {
             const npivot = @min(self.ncols(), self.nrows());
+            var pivot_row: usize = 0;
 
-            for (0..npivot) |pivot| {
-                k += 1;
+            // Process each column looking for pivots
+            for (0..self.ncols()) |col| {
+                if (pivot_row >= npivot) break;
 
-                // Find first non-zero entry to swap into this position
+                // Find a non-zero entry in this column at or below pivot_row
                 var found = false;
-                outer: for (pivot..self.ncols()) |j| {
-                    for (pivot..npivot) |i| {
-                        if (!self.lhs[i][j].iszero()) {
-                            try self.swapCols(pivot, j);
-                            try self.swapRows(pivot, i);
-                            found = true;
-                            break :outer;
-                        }
+                for (pivot_row..self.nrows()) |i| {
+                    if (!self.lhs[i][col].iszero()) {
+                        // Swap this row with the pivot row
+                        try self.swapRows(pivot_row, i);
+                        found = true;
+                        break;
                     }
                 }
 
+                // If no pivot found in this column, move to next column
                 if (!found) {
-                    // If there are no non-zero pivots and RHS is zero
-                    // -> no solution
-                    for (pivot..npivot) |i| {
-                        if (!self.rhs[i].iszero()) {
-                            self.print();
-                            return error.NoSolution;
-                        }
-                    }
-
-                    // We can safely ignore the rest of the system.
-                    // TODO: REMOVE THIS
-                    while (self.nrows() > pivot) {
-                        try self.removeRow(self.nrows() - 1);
-                    }
-                    break;
+                    continue;
                 }
 
                 // Normalize pivot row
                 {
-                    const factor = self.lhs[pivot][pivot];
+                    const factor = self.lhs[pivot_row][col];
 
                     for (0..self.ncols()) |j| {
-                        const val = self.lhs[pivot][j];
-                        if (val.equals(0)) {
-                            continue;
-                        }
-                        self.lhs[pivot][j] = try val.div(factor);
+                        self.lhs[pivot_row][j] = try self.lhs[pivot_row][j].div(factor);
                     }
-                    // Also normalize the RHS
-                    self.rhs[pivot] = try self.rhs[pivot].div(factor);
+                    self.rhs[pivot_row] = try self.rhs[pivot_row].div(factor);
                 }
 
-                // Eliminate entries in this column from other rows by
-                // removing this row from other rows as needed.
-                for (0..self.nrows()) |rowIdx| {
-                    if (rowIdx == pivot or self.lhs[rowIdx][pivot].equals(0)) {
+                // Eliminate entries in this column from all other rows
+                for (0..self.nrows()) |row_idx| {
+                    if (row_idx == pivot_row or self.lhs[row_idx][col].iszero()) {
                         continue;
                     }
 
-                    const remove_factor = try self.lhs[rowIdx][pivot].mul(-1);
-
-                    // Eliminate this entry by subtracting the pivot row
-                    try self.addRows(rowIdx, pivot, remove_factor);
+                    const remove_factor = try self.lhs[row_idx][col].mul(-1);
+                    try self.addRows(row_idx, pivot_row, remove_factor);
                 }
+
+                pivot_row += 1;
             }
 
-            // Finally, remove empty rows
-            while (self.nrows() > self.ncols()) {
-                try self.removeRow(self.nrows() - 1);
+            // Remove trailing zero rows (for overdetermined systems)
+            while (self.nrows() > 0) {
+                const last_row = self.nrows() - 1;
+                var all_zero = true;
+
+                // Check if last row is all zeros (including RHS)
+                for (0..self.ncols()) |j| {
+                    if (!self.lhs[last_row][j].iszero()) {
+                        all_zero = false;
+                        break;
+                    }
+                }
+                if (!self.rhs[last_row].iszero()) {
+                    all_zero = false;
+                }
+
+                if (all_zero) {
+                    try self.removeRow(last_row);
+                } else {
+                    break;
+                }
             }
         }
     };
 }
 
-fn parseExample(comptime T: type, alloc: std.mem.Allocator, s: []const u8) !EquationSystem(T) {
+pub fn parseExample(comptime T: type, alloc: std.mem.Allocator, s: []const u8) !EquationSystem(T) {
     var fieldIter = std.mem.tokenizeScalar(u8, s, ' ');
 
     // Capture X and y
@@ -367,6 +366,7 @@ test "SolveInput" {
     var k: u64 = 0;
 
     const filter = [_]usize{};
+    var total: i16 = 0;
     while (rows.next()) |row| : (k += 1) {
         if (filter.len > 0) {
             var ok = false;
@@ -387,8 +387,10 @@ test "SolveInput" {
         const vals = try std.testing.allocator.alloc(i16, eq.ncols());
         defer std.testing.allocator.free(vals);
         const cost = try les.minimizeCost(vals, GetCostFn(i16));
+        total += cost;
         std.debug.print("Cost for eq {d}: {d}\n", .{ k, cost });
     }
+    std.debug.print("Total cost: {d}\n", .{total});
 }
 
 fn GetCostFn(comptime T: type) fn ([]T) T {
@@ -413,7 +415,7 @@ fn printFrac(comptime T: type, a: Frac(T)) void {
     std.debug.print("{s}", .{s});
 }
 
-fn LinEqSolver(comptime T: type) type {
+pub fn LinEqSolver(comptime T: type) type {
     return struct {
         const Self = @This();
 
@@ -427,69 +429,103 @@ fn LinEqSolver(comptime T: type) type {
             const n = self.eq.ncols();
             const m = self.eq.nrows();
 
-            // Starting with the bottom row and moving up, we should be able to derive each value
-            // but first, we memset zeroes for the start
-            @memset(values[0..m], 0);
+            // Solve for each row from bottom to top
+            // For each row, find the pivot column (leading 1) and solve for that variable
             for (0..m) |_i| {
-                const i = m - _i - 1; // please zig, why can't we go from high to low in for loops?
+                const i = m - _i - 1;
 
-                // Figure out rhs
+                // Find pivot column in this row (first non-zero entry)
+                var pivot_col: ?usize = null;
+                for (0..n) |j| {
+                    if (!self.eq.lhs[i][j].iszero()) {
+                        pivot_col = j;
+                        break;
+                    }
+                }
+
+                if (pivot_col == null) {
+                    // All-zero row, skip
+                    continue;
+                }
+
+                const pcol = pivot_col.?;
+
+                // Calculate rhs - sum of (coefficient * value) for all other columns
                 var val = self.eq.rhs[i];
-                for (m..n) |j| {
+                for (0..n) |j| {
+                    if (j == pcol) continue;
                     const colval = try self.eq.lhs[i][j].mul(values[j]);
                     val = try val.sub(colval);
                 }
+
+                // Divide by the pivot coefficient to get the value
+                val = try val.div(self.eq.lhs[i][pcol]);
 
                 // Check result
                 if (!val.isInteger()) {
                     return error.HasFraction;
                 }
 
-                // Parse as int and check that it's positive.
+                // Parse as int and check that it's positive
                 const x = try val.asInt(T);
                 if (x < 0) {
-                    // Can't have a negative weight.
                     return error.OutOfBounds;
                 }
 
-                // Add to list of values
-                values[i] = x;
+                values[pcol] = x;
             }
         }
 
         pub fn minimizeCost(self: *Self, result: []T, costFn: fn ([]T) T) !T {
+            const upperbound: T = 274;
+
+            // Convert to RREF
+            try self.eq.rref();
+            @memset(result, 0);
+
             const n = self.eq.ncols();
             const m = self.eq.nrows();
 
-            var upperbound: T = 0;
+            // Identify pivot columns by finding the leading 1 in each row
+            var is_pivot = [_]bool{false} ** 64; // Max 64 columns
             for (0..m) |i| {
-                upperbound = @max(upperbound, self.eq.rhs[i].toCeil() + 1);
+                for (0..n) |j| {
+                    if (!self.eq.lhs[i][j].iszero()) {
+                        is_pivot[j] = true;
+                        break;
+                    }
+                }
             }
 
-            // To solve this linear equation system, we start with converting the systems
-            // to reduced row echelon form.
-            try self.eq.rref();
+            // Build list of free variable columns
+            var free_cols: [64]usize = undefined;
+            var nfree: usize = 0;
+            for (0..n) |j| {
+                if (!is_pivot[j]) {
+                    free_cols[nfree] = j;
+                    nfree += 1;
+                }
+            }
 
-            // self.eq.print();
-
-            // Now that we have the reduced equation system, we can brute-force through
-            // alternatives.
-            const nfree = n - m;
-
-            if (nfree > 0) {
-                @memset(result[m..], 0);
-                result[m] = upperbound;
+            // If no free variables, solve directly
+            if (nfree == 0) {
+                try self.solve(result);
+                return costFn(result);
             }
 
             var minCost: T = std.math.maxInt(T);
 
-            // Iterate over all combinations
-            for (0..std.math.pow(u64, @intCast(upperbound), @intCast(nfree))) |_x| {
+            // Iterate over all combinations of free variable values
+            const ncombs = std.math.pow(u64, @intCast(upperbound), @intCast(nfree));
+            std.debug.print("Going through {d} combs\n", .{ncombs});
+            for (0..ncombs) |_x| {
                 var x = _x;
-                @memset(result[m..], 0);
+                @memset(result, 0);
+
+                // Set free variable values
                 for (0..nfree) |k| {
                     const val = @mod(x, @as(u64, @intCast(upperbound)));
-                    result[m + k] = @intCast(val);
+                    result[free_cols[k]] = @intCast(val);
                     x = @divTrunc(x, @as(u64, @intCast(upperbound)));
                 }
 

@@ -15,8 +15,6 @@ const ArrayList = std.ArrayList;
 const HashMap = std.HashMap;
 const eql = std.mem.eql;
 
-const RuntimeStarsAndBars = @import("stars_and_bars.zig").RuntimeStarsAndBars;
-
 var gpa_impl = std.heap.GeneralPurposeAllocator(.{}){};
 var gpa = gpa_impl.allocator();
 
@@ -164,70 +162,50 @@ const Solve2Result = struct {
     score: f64,
 };
 
-fn solve2(m: Machine, machineIdx: usize) Solve2Result {
-    // Build equation system from machine:
-    // - neqs = number of rows (m.w)
-    // - nvars = number of buttons (m.pushEffects.len)
-    // - lhs[row][button] = 1 if button affects row
-    // - rhs[row] = power[row]
-    const neqs = m.w;
-    const nvars = m.pushEffects.len;
-
-    var eq = solver.EquationSystem(i64).init(gpa, neqs, nvars) catch {
-        log.err("Failed to initialize equation system", .{});
-        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
-    };
-    defer eq.deinit();
-
-    // Fill in the coefficients
-    for (m.pushEffects, 0..) |effects, button| {
-        for (effects) |row| {
-            eq.lhs[row][button] = 1;
+fn GetCostFn(comptime T: type) fn ([]T) T {
+    return struct {
+        fn f(xs: []T) T {
+            var res: T = 0;
+            for (xs) |x| res += x;
+            return res;
         }
-    }
+    }.f;
+}
 
-    // Fill in the RHS
-    for (0..neqs) |row| {
-        eq.rhs[row] = m.power[row];
-    }
+fn solve2(comptime T: type) !i64 {
+    const contents = try std.fs.cwd().readFileAlloc(gpa, "./input", 1024 * 1024);
+    defer gpa.free(contents);
 
-    // Solve using LinEqSolver
-    var les = solver.LinEqSolver(i64).init(gpa, &eq) catch {
-        log.err("Failed to initialize LinEqSolver", .{});
-        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
-    };
-    defer les.deinit();
+    var rows = std.mem.tokenizeScalar(u8, contents, '\n');
+    var k: u64 = 0;
 
-    const maybeSolution = les.solveMinSum(500) catch |err| {
-        if (err == error.IntegerDivisionFailed) {
-            log.err("IntegerDivisionFailed for machine {d}:", .{machineIdx});
-            log.err("  neqs={d}, nvars={d}", .{ neqs, nvars });
-            log.err("  Current equation state:", .{});
-            eq.print();
-            log.err("  col_order: {any}", .{les.col_order});
-        } else {
-            log.err("Solver error: {any}", .{err});
+    const filter = [_]usize{};
+    var total: i64 = 0;
+    while (rows.next()) |row| : (k += 1) {
+        if (filter.len > 0) {
+            var ok = false;
+            for (filter) |kk| {
+                if (kk == k) {
+                    ok = true;
+                }
+            }
+            if (!ok) {
+                continue;
+            }
         }
-        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
-    };
 
-    if (maybeSolution) |solution| {
-        defer gpa.free(solution);
-        var sum: u64 = 0;
-        var maxVal: u64 = 0;
-        for (solution) |v| {
-            sum += @intCast(v);
-            maxVal = @max(maxVal, @as(u64, @intCast(v)));
-        }
-        return Solve2Result{
-            .res = sum,
-            .maxPushGroupSize = @intCast(maxVal),
-            .score = @floatFromInt(sum),
-        };
-    } else {
-        log.err("No solution found for machine", .{});
-        return Solve2Result{ .res = 0, .maxPushGroupSize = 0, .score = 0 };
+        var eq = try solver.parseExample(T, gpa, row);
+        defer eq.deinit();
+        var les = solver.LinEqSolver(T).init(&eq);
+
+        const vals = try gpa.alloc(i16, eq.ncols());
+        defer gpa.free(vals);
+        const cost = try les.minimizeCost(vals, GetCostFn(i16));
+        total += @as(i64, cost);
+        std.debug.print("Cost for eq {d}: {d}\n", .{ k, cost });
     }
+    std.debug.print("Total cost: {d}\n", .{total});
+    return total;
 }
 
 pub fn bmstr(comptime T: type, bm: T, w: T) [@bitSizeOf(T)]u8 {
@@ -245,10 +223,6 @@ pub fn main() !void {
     const contents = try cwd().readFileAlloc(gpa, filepath, 4 << 20);
     var lines = std.mem.tokenizeScalar(u8, contents, '\n');
     var res1: u64 = 0;
-    // var res2: u64 = 0;
-    var maxScore: f64 = 0;
-    var maxPushGroupSize: u32 = 0;
-    var res2: u64 = 0;
 
     var n: usize = 0;
     while (lines.next()) |_| {
@@ -269,19 +243,18 @@ pub fn main() !void {
     lines.reset();
 
     var i: usize = 1;
+    var highest_power: u16 = 0;
     while (lines.next()) |line| {
         log.info("Finding result for machine {d} of {d}", .{ i, n });
         const m = try Machine.parse(gpa, line);
         // try m.printContents();
+        for (m.power) |p| {
+            highest_power = @max(highest_power, p);
+        }
         res1 += try solve1(m);
-        const resStruct = solve2(m);
-        res2 += resStruct.res;
-        maxPushGroupSize = @max(maxPushGroupSize, resStruct.maxPushGroupSize);
-        maxScore = @max(maxScore, resStruct.score);
         i += 1;
     }
-    log.info("MaxScore: {d}", .{maxScore});
-    log.info("MaxPushGroupSize: {d}", .{maxPushGroupSize});
     log.info("Result1: {d}", .{res1});
-    log.info("Result2: {d}", .{res2});
+    log.info("Highest power: {d}", .{highest_power});
+    log.info("Result2: {d}", .{try solve2(i16)});
 }
