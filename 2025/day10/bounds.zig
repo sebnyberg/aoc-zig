@@ -53,7 +53,6 @@ pub fn Variable(comptime T: type) type {
 
         pub fn consider(self: *Self, coeff: Frac(T), _other: Frac(T), _eq: Equality) !bool {
             if (coeff.a == 0) {
-                std.log.warn("Ignored a zero coefficient for {s}\n", .{self.id});
                 return false;
             }
 
@@ -80,13 +79,6 @@ pub fn Variable(comptime T: type) type {
                     // Check and update upper bound
                     switch (self.hi.?.cmp(other)) {
                         .less => {
-                            std.log.err("Upper bound for {s} ({d}/{d}) is lower than equality condition (={d}/{d})", .{
-                                self.id,
-                                self.hi.?.a,
-                                self.hi.?.b,
-                                other.a,
-                                other.b,
-                            });
                             return error.OutOfBounds;
                         },
                         .greater => {
@@ -98,13 +90,6 @@ pub fn Variable(comptime T: type) type {
                     // Check and update lower bound
                     switch (self.lo.?.cmp(other)) {
                         .greater => {
-                            std.log.err("Lower bound for {s} ({d}/{d}) is higher than equality condition (={d}/{d})", .{
-                                self.id,
-                                self.lo.?.a,
-                                self.lo.?.b,
-                                other.a,
-                                other.b,
-                            });
                             return error.OutOfBounds;
                         },
                         .less => {
@@ -121,13 +106,6 @@ pub fn Variable(comptime T: type) type {
                     }
                     if (self.lo) |lo| {
                         if (lo.cmp(other) == .greater) {
-                            std.log.err("Lower bound for {s} ({d}/{d}) is higher than the condition (<={d}/{d})", .{
-                                self.id,
-                                self.lo.?.a,
-                                self.lo.?.b,
-                                other.a,
-                                other.b,
-                            });
                             return error.OutOfBounds;
                         }
                     }
@@ -143,13 +121,6 @@ pub fn Variable(comptime T: type) type {
                     }
                     if (self.hi) |hi| {
                         if (hi.cmp(other) == .less) {
-                            std.log.err("Higher bound for {s} ({d}/{d}) is lower than the condition (<={d}/{d})", .{
-                                self.id,
-                                self.hi.?.a,
-                                self.hi.?.b,
-                                other.a,
-                                other.b,
-                            });
                             return error.OutOfBounds;
                         }
                     }
