@@ -1,12 +1,32 @@
 const std = @import("std");
 const Frac = @import("frac.zig").Frac;
 
-pub const Equality = enum {
+pub const Comparison = enum {
     LessThanOrEqual,
     LessThan,
     Equal,
     GreaterThanOrEqual,
     GreaterThan,
+
+    pub fn flip(self: Comparison) Comparison {
+        return switch (self) {
+            .LessThanOrEqual => .GreaterThanOrEqual,
+            .LessThan => .GreaterThan,
+            .GreaterThanOrEqual => .LessThanOrEqual,
+            .GreaterThan => .LessThan,
+            .Equal => .Equal,
+        };
+    }
+
+    pub fn symbol(self: Comparison) []const u8 {
+        return switch (self) {
+            .LessThanOrEqual => "<=",
+            .LessThan => "<",
+            .Equal => "=",
+            .GreaterThanOrEqual => ">=",
+            .GreaterThan => ">",
+        };
+    }
 };
 
 pub fn Variable(comptime T: type) type {
@@ -20,16 +40,6 @@ pub fn Variable(comptime T: type) type {
         pub fn init(id: []const u8) Self {
             return Self{
                 .id = id,
-            };
-        }
-
-        pub fn flipEq(eq: Equality) Equality {
-            return switch (eq) {
-                .LessThanOrEqual => .GreaterThanOrEqual,
-                .LessThan => .GreaterThan,
-                .GreaterThanOrEqual => .LessThanOrEqual,
-                .GreaterThan => .LessThan,
-                .Equal => .Equal,
             };
         }
 
@@ -51,17 +61,17 @@ pub fn Variable(comptime T: type) type {
             std.debug.print("\n", .{});
         }
 
-        pub fn consider(self: *Self, coeff: Frac(T), _other: Frac(T), _eq: Equality) !bool {
+        pub fn consider(self: *Self, coeff: Frac(T), _other: Frac(T), _eq: Comparison) !bool {
             if (coeff.a == 0) {
                 return false;
             }
 
             // Divide other by coeff.
             const other = try _other.div(coeff);
-            var eq: Equality = _eq;
+            var eq: Comparison = _eq;
 
             if (coeff.a < 0) {
-                eq = Self.flipEq(eq);
+                eq = eq.flip();
             }
 
             var changed = false;
@@ -141,14 +151,6 @@ test "Variable.init" {
     try std.testing.expectEqualStrings("x_0", bv.id);
     try std.testing.expectEqual(@as(?Frac(i16), null), bv.lo);
     try std.testing.expectEqual(@as(?Frac(i16), null), bv.hi);
-}
-
-test "Variable.flipEq" {
-    try std.testing.expectEqual(Equality.GreaterThanOrEqual, Variable(i16).flipEq(.LessThanOrEqual));
-    try std.testing.expectEqual(Equality.GreaterThan, Variable(i16).flipEq(.LessThan));
-    try std.testing.expectEqual(Equality.LessThanOrEqual, Variable(i16).flipEq(.GreaterThanOrEqual));
-    try std.testing.expectEqual(Equality.LessThan, Variable(i16).flipEq(.GreaterThan));
-    try std.testing.expectEqual(Equality.Equal, Variable(i16).flipEq(.Equal));
 }
 
 test "Variable.consider - upper bound" {

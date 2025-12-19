@@ -93,7 +93,7 @@ fn EquationSystem(comptime T: type) type {
     return struct {
         lhs: [][]Frac(T),
         rhs: []Frac(T),
-        eqs: []bounds.Equality,
+        eqs: []bounds.Comparison,
         alloc: std.mem.Allocator,
         allocated_rows: usize,
         const Self = @This();
@@ -102,7 +102,7 @@ fn EquationSystem(comptime T: type) type {
             const zeroFrac = try Frac(T).init(0, 1);
 
             const lhs = try alloc.alloc([]Frac(T), num_eqs);
-            const eqs = try alloc.alloc(bounds.Equality, num_eqs);
+            const eqs = try alloc.alloc(bounds.Comparison, num_eqs);
             for (lhs, 0..) |_, i| {
                 lhs[i] = try alloc.alloc(Frac(T), num_vars);
                 for (0..lhs[i].len) |j| {
@@ -133,6 +133,7 @@ fn EquationSystem(comptime T: type) type {
                 const delta = try self.lhs[source][j].mul(factor);
                 self.lhs[target][j] = try self.lhs[target][j].add(delta);
             }
+
             const rhsDelta = try self.rhs[source].mul(factor);
             // std.debug.print("\n", .{});
             // printFrac(T, rhsDelta);
@@ -146,6 +147,25 @@ fn EquationSystem(comptime T: type) type {
                 self.lhs[target][j].mul(factor);
             }
             self.rhs[target].mul(factor);
+
+            if (self.eqs[target] == .Equal) {
+                return;
+            }
+
+            // Check if the factor is negative
+            var neg = false;
+            const ti = @typeInfo(@TypeOf(factor));
+            if (@TypeOf(factor) == Frac(T)) {
+                if (factor.a < 0) {
+                    neg = true;
+                }
+            } else if (ti == .int or ti == .comptime_int) {
+                if (factor < 0) {
+                    neg = true;
+                }
+            }
+            // Flip equality.
+            self.eqs[target] = self.eqs[target].flip();
         }
 
         pub fn removeRow(self: *Self, idx: usize) !void {
@@ -212,7 +232,8 @@ fn EquationSystem(comptime T: type) type {
                     const str = self.lhs[i][j].format(&buf) catch unreachable;
                     std.debug.print("{s:>6} ", .{str});
                 }
-                std.debug.print("| ", .{});
+                const sym = self.eqs[i].symbol();
+                std.debug.print("{s:>2} ", .{sym});
                 const rhs_str = self.rhs[i].format(&buf) catch unreachable;
                 std.debug.print("{s:>6}", .{rhs_str});
                 std.debug.print("\n", .{});
@@ -251,7 +272,6 @@ fn EquationSystem(comptime T: type) type {
                     }
 
                     // We can safely ignore the rest of the system.
-                    // TODO: remove this after refactor.
                     while (self.nrows() > pivot) {
                         try self.removeRow(self.nrows() - 1);
                     }
@@ -284,16 +304,6 @@ fn EquationSystem(comptime T: type) type {
 
                     // Eliminate this entry by subtracting the pivot row
                     try self.addRows(rowIdx, pivot, remove_factor);
-
-                    // for (pivot..self.ncols()) |colIdx| {
-                    //     const current = self.lhs[rowIdx][colIdx];
-                    //
-                    //     const pivot_val = try self.lhs[pivot][colIdx].mul(remove_factor);
-                    //     self.lhs[rowIdx][colIdx] = try current.sub(pivot_val);
-                    // }
-                    // const current_rhs = self.rhs[rowIdx];
-                    // const pivot_rhs_scaled = try self.rhs[pivot].mul(remove_factor);
-                    // self.rhs[rowIdx] = try current_rhs.sub(pivot_rhs_scaled);
                 }
             }
 
@@ -355,7 +365,7 @@ test "SolveInput" {
     var rows = std.mem.tokenizeScalar(u8, contents, '\n');
     var k: u64 = 0;
 
-    const filter = [_]usize{};
+    const filter = [_]usize{1};
     while (rows.next()) |row| : (k += 1) {
         if (filter.len > 0) {
             var ok = false;
@@ -407,7 +417,7 @@ fn LinEqSolver(comptime T: type) type {
             // to reduced row echelon form.
             try self.eq.rref();
 
-            // self.eq.print();
+            self.eq.print();
 
             // std.debug.print("Number of free variables: {d}\n", .{nfree});
 
@@ -480,7 +490,7 @@ fn LinEqSolver(comptime T: type) type {
                         continue;
                     }
                     const k = j - m; // free index
-                    _ = try variables[k].consider(self.eq.lhs[i][j], self.eq.rhs[i], bounds.Equality.LessThanOrEqual);
+                    _ = try variables[k].consider(self.eq.lhs[i][j], self.eq.rhs[i], bounds.Comparison.LessThanOrEqual);
                 }
             }
 
