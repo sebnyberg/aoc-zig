@@ -190,7 +190,6 @@ fn Problem(comptime CellT: type) type {
                         alloc,
                         try Present(CellT).parse(alloc, &pat_lines),
                     );
-                    defer presents_list.items[presents_list.items.len - 1].deinit();
                     npresent += 1;
                 }
                 if (line.len > 3) {
@@ -210,6 +209,12 @@ fn Problem(comptime CellT: type) type {
         }
 
         fn deinit(self: *Self) void {
+            for (self.trees, 0..) |_, i| {
+                self.trees[i].deinit();
+            }
+            for (self.presents, 0..) |_, i| {
+                self.presents[i].deinit();
+            }
             self.alloc.free(self.trees);
             self.alloc.free(self.presents);
         }
@@ -243,8 +248,8 @@ pub fn solve1(
     alloc: std.mem.Allocator,
     contents: []const u8,
 ) !usize {
-    const p = try Problem(CellT).parse(alloc, contents);
-    _ = p;
+    var p = try Problem(CellT).parse(alloc, contents);
+    defer p.deinit();
     return 0;
 }
 
