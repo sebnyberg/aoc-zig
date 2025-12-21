@@ -12,6 +12,10 @@ const eql = std.mem.eql;
 var gpa_impl = std.heap.GeneralPurposeAllocator(.{}){};
 var gpa = gpa_impl.allocator();
 
+// Bitmask representation: u4096 = 64x64 grid
+const BitMask = u4096;
+const GRID_WIDTH = 64;
+
 const SolveError = error{
     ParseError,
 };
@@ -60,6 +64,8 @@ fn Present(comptime T: type) type {
     return struct {
         patterns: [][3][3]T,
         alloc: std.mem.Allocator,
+        area: usize, // Number of cells covered by this present (# cells)
+        pattern_masks: []BitMask, // Bitmask for each pattern at position (0,0)
 
         const Self = @This();
 
@@ -135,24 +141,49 @@ fn Present(comptime T: type) type {
         fn parse(alloc: std.mem.Allocator, s: [][]const u8) !Self {
             if (s.len != 3) return error.ParseError;
             var pat: [3][3]T = undefined;
+            var area: usize = 0;
             for (s, 0..) |r, i| {
                 if (r.len != 3) return error.ParseError;
                 for (r, 0..) |ch, j| {
                     pat[i][j] = switch (ch) {
-                        '#' => 1,
+                        '#' => blk: {
+                            area += 1;
+                            break :blk 1;
+                        },
                         '.' => 0,
                         else => unreachable,
                     };
                 }
             }
+
+            const patterns = try Self._findPatterns(alloc, pat);
+
+            // Create bitmasks for each pattern at position (0,0) in a 64x64 grid
+            var pattern_masks = try alloc.alloc(BitMask, patterns.len);
+            for (patterns, 0..) |pattern, idx| {
+                var mask: BitMask = 0;
+                for (0..3) |i| {
+                    for (0..3) |j| {
+                        if (pattern[i][j] != 0) {
+                            const bit_pos = i * GRID_WIDTH + j;
+                            mask |= @as(BitMask, 1) << @intCast(bit_pos);
+                        }
+                    }
+                }
+                pattern_masks[idx] = mask;
+            }
+
             return Self{
                 .alloc = alloc,
-                .patterns = try Self._findPatterns(alloc, pat),
+                .patterns = patterns,
+                .area = area,
+                .pattern_masks = pattern_masks,
             };
         }
 
         fn deinit(self: *Self) void {
             self.alloc.free(self.patterns);
+            self.alloc.free(self.pattern_masks);
         }
     };
 }
@@ -224,113 +255,108 @@ fn Solver(comptime T: type) type {
         npresents: [6]u8,
         n: usize,
         m: usize,
-        state: [128][128]T,
+        state: BitMask,
+        available_area: usize, // Track available empty cells
 
         const Self = @This();
         const done = [_]u8{0} ** 6;
 
         fn init(board: Board, presents: []Present(T)) Self {
-            // Let's try naive dfs first.
-            var state: [128][128]T = undefined;
-            for (&state) |*row| {
-                @memset(row, 0);
+            // Initialize state with 1s in all out-of-bounds positions
+            var state: BitMask = 0;
+            for (0..GRID_WIDTH) |i| {
+                for (0..GRID_WIDTH) |j| {
+                    // Mark out-of-bounds cells as occupied
+                    if (i >= board.n or j >= board.m) {
+                        const bit_pos: u12 = @intCast(i * GRID_WIDTH + j);
+                        state |= @as(BitMask, 1) << bit_pos;
+                    }
+                }
             }
+
             return Self{
                 .presents = presents,
                 .npresents = board.npresents,
                 .n = board.n,
                 .m = board.m,
                 .state = state,
+                .available_area = board.n * board.m,
             };
         }
 
-        /// addDelta adds d * pat to the state at the top-left corner of (i,j).
-        /// The caller must verify that this is a legal operation.
-        inline fn addDelta(state: *[128][128]T, pat: [3][3]T, i: usize, j: usize, d: T) void {
-            for (0..3) |di| {
-                for (0..3) |dj| {
-                    state[i + di][j + dj] +%= d *% pat[di][dj];
-                }
+        /// Calculate how many cells are needed for remaining presents
+        fn getRemainingArea(self: *const Self, rem: [6]u8) usize {
+            var area: usize = 0;
+            for (0..6) |i| {
+                area += @as(usize, rem[i]) * self.presents[i].area;
             }
+            return area;
         }
 
-        inline fn canPlacePattern(state: *[128][128]T, pat: [3][3]T, i: usize, j: usize) bool {
-            for (0..3) |di| {
-                for (0..3) |dj| {
-                    if (pat[di][dj] != 0 and state[i + di][j + dj] != 0) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        }
-
-        /// placePresents recursively places presents (their patterns) in the state, returning /
+        /// placePresents recursively places presents (their patterns) in the state, returning
         /// short-circuiting "true" when a solution is found.
-        fn placePresents(self: *Self, rem: [6]u8, start_i: usize, start_j: usize) bool {
+        /// This uses a present-based DFS with bitmask operations for fast collision detection.
+        fn placePresents(self: *Self, rem: [6]u8) bool {
+            // Base case: all presents placed
             if (std.mem.eql(u8, &rem, &done)) {
                 return true;
             }
 
-            // OPTIMIZATION: Find the first empty cell instead of trying every position
-            // This removes the exponential "skip" branch at each cell
-            // To revert: restore the old version that tries skip first, then placement
-            var i: usize = start_i;
-            var j: usize = start_j;
-
-            // Normalize starting position
-            if (i >= self.n) {
-                i = 0;
-                j += 1;
-            }
-
-            // Find first empty cell starting from (i, j)
-            var found_empty = false;
-            while (j < self.m) {
-                while (i < self.n) {
-                    if (self.state[i][j] == 0) {
-                        found_empty = true;
-                        break;
-                    }
-                    i += 1;
-                }
-                if (found_empty) break;
-                i = 0;
-                j += 1;
-            }
-
-            // If no empty cells but presents remain, no solution
-            if (!found_empty) {
+            // Early pruning: if we need more area than available, impossible
+            const needed_area = self.getRemainingArea(rem);
+            if (needed_area > self.available_area) {
                 return false;
             }
 
-            // OPTIMIZATION: Must place something at this empty cell (no skip option)
-            // Try placing each present pattern at (i, j)
-            for (0..6) |present_idx| {
-                if (rem[present_idx] == 0) continue;
+            // Find the next present type that still needs placing
+            var next_present: ?usize = null;
+            for (0..6) |i| {
+                if (rem[i] > 0) {
+                    next_present = i;
+                    break;
+                }
+            }
 
-                const present = self.presents[present_idx];
-                for (present.patterns) |pattern| {
-                    // Check bounds
+            if (next_present == null) {
+                return false;
+            }
+
+            const present_idx = next_present.?;
+            const present = self.presents[present_idx];
+
+            // Try placing this present at every valid position on the board
+            for (0..self.n) |i| {
+                for (0..self.m) |j| {
+                    // Check bounds for 3x3 pattern
                     if (i + 3 > self.n or j + 3 > self.m) continue;
 
-                    // Check if we can place this pattern
-                    if (!Self.canPlacePattern(&self.state, pattern, i, j)) continue;
+                    // Try all pattern variations (rotations/flips)
+                    for (present.pattern_masks, 0..) |pattern_mask, mask_idx| {
+                        _ = mask_idx;
+                        // Shift the pattern to position (i, j)
+                        const shift_amount: u12 = @intCast(i * GRID_WIDTH + j);
+                        const shifted_mask = pattern_mask << shift_amount;
 
-                    // Place the pattern
-                    Self.addDelta(&self.state, pattern, i, j, 1);
+                        // Check for collision using bitwise AND
+                        if ((self.state & shifted_mask) != 0) continue;
 
-                    // Update remaining count
-                    var new_rem = rem;
-                    new_rem[present_idx] -= 1;
+                        // Place the pattern using bitwise OR
+                        self.state |= shifted_mask;
+                        self.available_area -= present.area;
 
-                    // Recurse to next position
-                    if (self.placePresents(new_rem, i + 1, j)) {
-                        return true;
+                        // Update remaining count
+                        var new_rem = rem;
+                        new_rem[present_idx] -= 1;
+
+                        // Recurse
+                        if (self.placePresents(new_rem)) {
+                            return true;
+                        }
+
+                        // Backtrack: remove the pattern using bitwise XOR and restore available area
+                        self.state ^= shifted_mask;
+                        self.available_area += present.area;
                     }
-
-                    // Unplace the pattern (subtract 1, which is add 3 in u2 arithmetic)
-                    Self.addDelta(&self.state, pattern, i, j, 3);
                 }
             }
 
@@ -379,7 +405,7 @@ pub fn solve1(
 
         print("Attempting to solve board: {}x{} with presents: {any}\n", .{ board.n, board.m, board.npresents });
 
-        if (solver.placePresents(board.npresents, 0, 0)) {
+        if (solver.placePresents(board.npresents)) {
             print("Found a solution!\n", .{});
             res += 1;
         } else {
@@ -389,29 +415,8 @@ pub fn solve1(
     return res;
 }
 
-// fn dfs(
-//     comptime T: type,
-//     npresents: []usize,
-//     presents: []Present(T),
-//     state: *[100][100]T,
-//     i: usize,
-//     j: usize,
-//     m: usize,
-//     n: usize,
-// ) bool {
-//     _ = npresents;
-//     _ = state;
-//     _ = i;
-//     _ = j;
-//     _ = m;
-//     _ = n;
-//     _ = presents;
-//     // Place any
-//     return true;
-// }
-
 pub fn main() !void {
-    const filepath = "testinput";
+    const filepath = "input";
     const contents = try cwd().readFileAlloc(gpa, filepath, 4 << 20);
     print("Result1: {d}\n", .{try solve1(CellType, gpa, contents)});
 }
