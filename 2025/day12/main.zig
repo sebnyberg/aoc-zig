@@ -16,10 +16,10 @@ const SolveError = error{
     ParseError,
 };
 
-const ChristmasTree = struct {
-    lo: usize,
-    hi: usize,
-    indices: []usize,
+const Board = struct {
+    m: usize,
+    n: usize,
+    npresents: [6]u8,
     alloc: std.mem.Allocator,
 
     const Self = @This();
@@ -29,29 +29,30 @@ const ChristmasTree = struct {
 
         // Parse hi/lo
         var dims = std.mem.tokenizeScalar(u8, fields.next().?, 'x');
-        const lo_s = dims.next().?;
-        const lo = try std.fmt.parseInt(usize, lo_s, 10);
-        var hi_s = dims.next().?;
-        hi_s = hi_s[0 .. hi_s.len - 1];
-        const hi = try std.fmt.parseInt(usize, hi_s, 10);
+        const m_s = dims.next().?;
+        const m = try std.fmt.parseInt(usize, m_s, 10);
+        var n_s = dims.next().?;
+        n_s = n_s[0 .. n_s.len - 1];
+        const n = try std.fmt.parseInt(usize, n_s, 10);
 
         // Parse indices
-        var indices_al = std.ArrayList(usize){};
-        while (fields.next()) |field| {
-            try indices_al.append(alloc, try std.fmt.parseInt(usize, field, 10));
+        var npresents: [6]u8 = undefined;
+        var k: usize = 0;
+        while (fields.next()) |field| : (k += 1) {
+            npresents[k] = try std.fmt.parseInt(u8, field, 10);
         }
-        const indices = try indices_al.toOwnedSlice(alloc);
 
         return Self{
             .alloc = alloc,
-            .lo = lo,
-            .hi = hi,
-            .indices = indices,
+            .m = m,
+            .n = n,
+            .npresents = npresents,
         };
     }
 
     fn deinit(self: *Self) void {
-        self.alloc.free(self.indices);
+        _ = self;
+        // npresents is a fixed array, not allocated memory
     }
 };
 
@@ -159,24 +160,23 @@ fn Present(comptime T: type) type {
 fn Problem(comptime CellT: type) type {
     return struct {
         alloc: std.mem.Allocator,
-        presents: []Present(CellT),
-        trees: []ChristmasTree,
+        presents: [6]Present(CellT),
+        boards: []Board,
 
         const Self = @This();
 
         fn parse(alloc: std.mem.Allocator, s: []const u8) !Self {
             var lines = std.mem.tokenizeScalar(u8, s, '\n');
 
-            var presents_list = std.ArrayList(Present(CellT)){};
-            defer presents_list.deinit(alloc);
+            var presents: [6]Present(CellT) = undefined;
 
-            var trees_list = std.ArrayList(ChristmasTree){};
-            defer trees_list.deinit(alloc);
+            var boards_list = std.ArrayList(Board){};
+            defer boards_list.deinit(alloc);
 
             var pat_lines: [3][]const u8 = undefined;
 
             var npresent: usize = 0;
-            var ntree: usize = 0;
+            var nboard: usize = 0;
 
             while (lines.next()) |line| {
                 if (std.mem.eql(u8, line, "")) {
@@ -186,37 +186,155 @@ fn Problem(comptime CellT: type) type {
                     pat_lines[0] = lines.next().?;
                     pat_lines[1] = lines.next().?;
                     pat_lines[2] = lines.next().?;
-                    try presents_list.append(
-                        alloc,
-                        try Present(CellT).parse(alloc, &pat_lines),
-                    );
+                    presents[npresent] = try Present(CellT).parse(alloc, &pat_lines);
                     npresent += 1;
                 }
                 if (line.len > 3) {
-                    try trees_list.append(
+                    try boards_list.append(
                         alloc,
-                        try ChristmasTree.parse(alloc, line),
+                        try Board.parse(alloc, line),
                     );
-                    ntree += 1;
+                    nboard += 1;
                 }
             }
 
             return Self{
                 .alloc = alloc,
-                .presents = try presents_list.toOwnedSlice(alloc),
-                .trees = try trees_list.toOwnedSlice(alloc),
+                .presents = presents,
+                .boards = try boards_list.toOwnedSlice(alloc),
             };
         }
 
         fn deinit(self: *Self) void {
-            for (self.trees, 0..) |_, i| {
-                self.trees[i].deinit();
+            for (self.boards, 0..) |_, i| {
+                self.boards[i].deinit();
             }
             for (self.presents, 0..) |_, i| {
                 self.presents[i].deinit();
             }
-            self.alloc.free(self.trees);
-            self.alloc.free(self.presents);
+            self.alloc.free(self.boards);
+            // presents is a fixed array, not allocated memory
+        }
+    };
+}
+
+fn Solver(comptime T: type) type {
+    return struct {
+        presents: []Present(T),
+        npresents: [6]u8,
+        n: usize,
+        m: usize,
+        state: [128][128]T,
+
+        const Self = @This();
+        const done = [_]u8{0} ** 6;
+
+        fn init(board: Board, presents: []Present(T)) Self {
+            // Let's try naive dfs first.
+            var state: [128][128]T = undefined;
+            for (&state) |*row| {
+                @memset(row, 0);
+            }
+            return Self{
+                .presents = presents,
+                .npresents = board.npresents,
+                .n = board.n,
+                .m = board.m,
+                .state = state,
+            };
+        }
+
+        /// addDelta adds d * pat to the state at the top-left corner of (i,j).
+        /// The caller must verify that this is a legal operation.
+        inline fn addDelta(state: *[128][128]T, pat: [3][3]T, i: usize, j: usize, d: T) void {
+            for (0..3) |di| {
+                for (0..3) |dj| {
+                    state[i + di][j + dj] +%= d *% pat[di][dj];
+                }
+            }
+        }
+
+        inline fn canPlacePattern(state: *[128][128]T, pat: [3][3]T, i: usize, j: usize) bool {
+            for (0..3) |di| {
+                for (0..3) |dj| {
+                    if (pat[di][dj] != 0 and state[i + di][j + dj] != 0) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        /// placePresents recursively places presents (their patterns) in the state, returning /
+        /// short-circuiting "true" when a solution is found.
+        fn placePresents(self: *Self, rem: [6]u8, start_i: usize, start_j: usize) bool {
+            if (std.mem.eql(u8, &rem, &done)) {
+                return true;
+            }
+
+            // OPTIMIZATION: Find the first empty cell instead of trying every position
+            // This removes the exponential "skip" branch at each cell
+            // To revert: restore the old version that tries skip first, then placement
+            var i: usize = start_i;
+            var j: usize = start_j;
+
+            // Normalize starting position
+            if (i >= self.n) {
+                i = 0;
+                j += 1;
+            }
+
+            // Find first empty cell starting from (i, j)
+            var found_empty = false;
+            while (j < self.m) {
+                while (i < self.n) {
+                    if (self.state[i][j] == 0) {
+                        found_empty = true;
+                        break;
+                    }
+                    i += 1;
+                }
+                if (found_empty) break;
+                i = 0;
+                j += 1;
+            }
+
+            // If no empty cells but presents remain, no solution
+            if (!found_empty) {
+                return false;
+            }
+
+            // OPTIMIZATION: Must place something at this empty cell (no skip option)
+            // Try placing each present pattern at (i, j)
+            for (0..6) |present_idx| {
+                if (rem[present_idx] == 0) continue;
+
+                const present = self.presents[present_idx];
+                for (present.patterns) |pattern| {
+                    // Check bounds
+                    if (i + 3 > self.n or j + 3 > self.m) continue;
+
+                    // Check if we can place this pattern
+                    if (!Self.canPlacePattern(&self.state, pattern, i, j)) continue;
+
+                    // Place the pattern
+                    Self.addDelta(&self.state, pattern, i, j, 1);
+
+                    // Update remaining count
+                    var new_rem = rem;
+                    new_rem[present_idx] -= 1;
+
+                    // Recurse to next position
+                    if (self.placePresents(new_rem, i + 1, j)) {
+                        return true;
+                    }
+
+                    // Unplace the pattern (subtract 1, which is add 3 in u2 arithmetic)
+                    Self.addDelta(&self.state, pattern, i, j, 3);
+                }
+            }
+
+            return false;
         }
     };
 }
@@ -243,18 +361,57 @@ pub fn printGrid3x3(comptime T: type, grid: [3][3]T) void {
     printGrid(T, &rows);
 }
 
+const CellType = u2;
+
 pub fn solve1(
-    comptime CellT: type,
+    comptime T: type,
     alloc: std.mem.Allocator,
     contents: []const u8,
 ) !usize {
-    var p = try Problem(CellT).parse(alloc, contents);
+    _ = alloc;
+    var p = try Problem(T).parse(gpa, contents);
     defer p.deinit();
-    return 0;
+
+    // Try DFS on the first board
+    var res: usize = 0;
+    for (p.boards) |board| {
+        var solver = Solver(T).init(board, &p.presents);
+
+        print("Attempting to solve board: {}x{} with presents: {any}\n", .{ board.n, board.m, board.npresents });
+
+        if (solver.placePresents(board.npresents, 0, 0)) {
+            print("Found a solution!\n", .{});
+            res += 1;
+        } else {
+            print("No solution found.\n", .{});
+        }
+    }
+    return res;
 }
 
+// fn dfs(
+//     comptime T: type,
+//     npresents: []usize,
+//     presents: []Present(T),
+//     state: *[100][100]T,
+//     i: usize,
+//     j: usize,
+//     m: usize,
+//     n: usize,
+// ) bool {
+//     _ = npresents;
+//     _ = state;
+//     _ = i;
+//     _ = j;
+//     _ = m;
+//     _ = n;
+//     _ = presents;
+//     // Place any
+//     return true;
+// }
+
 pub fn main() !void {
-    const filepath = "input";
+    const filepath = "testinput";
     const contents = try cwd().readFileAlloc(gpa, filepath, 4 << 20);
-    print("Result1: {d}\n", .{try solve1(u2, gpa, contents)});
+    print("Result1: {d}\n", .{try solve1(CellType, gpa, contents)});
 }

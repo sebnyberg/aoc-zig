@@ -6,7 +6,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is an Advent of Code solutions repository written in Zig. Solutions are organized by year (2024, 2025) and day, with each day having its own directory containing a standalone `main.zig` file and input files.
 
-**Important**: This project uses **Zig 0.15**, which uses the ArrayList initialization syntax `ArrayList(T){}` rather than `ArrayList(T).init(alloc)`.
+**Important**: This project uses **Zig 0.15**. The ArrayList API in this version uses the following pattern:
+
+```zig
+// Initialize without allocator
+var list = ArrayList(T){};
+
+// Pass allocator to each operation
+try list.append(alloc, item);
+defer list.deinit(alloc);
+const slice = try list.toOwnedSlice(alloc);
+```
+
+**DO NOT** use `.init(alloc)` - that is an old API pattern. Always use `ArrayList(T){}` for initialization and pass the allocator to each method call.
 
 ## Build and Run Commands
 
